@@ -75,6 +75,32 @@ class WeatherPreprocessConfig:
         ]    
 
 
+def weights_filename(gfs_lats: np.ndarray) -> str:
+    """xESMF weights depend on the source grid: keep the original name for the
+    0.25 deg grid (721x1440) and use a grid-specific name otherwise (e.g. 0.5 deg)."""
+    ny, nx = gfs_lats.shape
+    if (ny, nx) == (721, 1440):
+        return "gfs_to_hrrr_weights.nc"
+    return f"gfs_to_hrrr_weights_{ny}x{nx}.nc"
+
+
+# Max hours between an hourly lead and the GFS files used to time-interpolate it
+# (the NCEI 0.5 deg archive is 3-hourly, so bracketing files are at most 2 h away).
+MAX_INTERP_OFFSET = 3
+
+
+def find_bracketing_leads(preprocessor, init_datetime: datetime, lead_time: int, base_dir: str,
+                          max_offset: int = MAX_INTERP_OFFSET) -> Optional[Tuple[int, int]]:
+    """Nearest available GFS files before and after `lead_time` (by valid time)."""
+    def exists(l):
+        return os.path.exists(preprocessor.get_valid_time_filename(init_datetime, l, base_dir))
+    lo = next((l for l in range(lead_time - 1, lead_time - max_offset - 1, -1) if exists(l)), None)
+    hi = next((l for l in range(lead_time + 1, lead_time + max_offset + 1) if exists(l)), None)
+    if lo is None or hi is None:
+        return None
+    return lo, hi
+
+
 class GridInterpolator:
     """Handles grid interpolation from GFS to HRRR grid using xESMF."""
 
@@ -117,7 +143,7 @@ class GridInterpolator:
                 "lat": ("y", gfs_lats[:, 0]),
                 "lon": ("x", gfs_lons[0, :])
             })
-            filename = "gfs_to_hrrr_weights.nc"
+            filename = weights_filename(gfs_lats)
             self.regridder = xe.Regridder(src_ds, self.hrrr_ds, "bilinear", reuse_weights=True, filename=filename)
         return self.regridder
 
@@ -133,21 +159,65 @@ class GridInterpolator:
 
 
 def process_single_lead_hour(args):
-    """Process a single lead hour for both pressure and surface variables."""
+    """Process a single lead hour for both pressure and surface variables.
+
+    If no GFS file exists at this valid time (e.g. the 3-hourly NCEI 0.5 deg archive),
+    the nearest earlier/later files are processed and blended linearly in time.
+    """
     lead_time, init_datetime, base_dir, norm_file, hrrr_grid_file = args
-    
+
     # Create a new preprocessor instance for this process
     config = WeatherPreprocessConfig(hrrr_grid_file)
     preprocessor = GRIBPreprocessor(config)
-    
+
     # Get filename for this lead time
     gfs_file = preprocessor.get_valid_time_filename(init_datetime, lead_time, base_dir)
-    
-    if not os.path.exists(gfs_file):
-        raise FileNotFoundError(f"GFS file not found for lead time {lead_time}h: {gfs_file}")
-    
+    if os.path.exists(gfs_file):
+        return _process_gfs_file(gfs_file, lead_time, init_datetime, base_dir, norm_file, config, preprocessor)
+
+    bracket = find_bracketing_leads(preprocessor, init_datetime, lead_time, base_dir)
+    if bracket is None:
+        raise FileNotFoundError(
+            f"GFS file not found for lead time {lead_time}h ({gfs_file}) and no files within "
+            f"+/-{MAX_INTERP_OFFSET}h to interpolate from"
+        )
+    lo, hi = bracket
+    w = (lead_time - lo) / (hi - lo)
+    file_lo = preprocessor.get_valid_time_filename(init_datetime, lo, base_dir)
+    file_hi = preprocessor.get_valid_time_filename(init_datetime, hi, base_dir)
+    logger.info(
+        f"Lead {lead_time}h: no hourly file; interpolating {1 - w:.2f}*{os.path.basename(file_lo)} + "
+        f"{w:.2f}*{os.path.basename(file_hi)}"
+    )
+    # Pass the target lead so the APCP future-synoptic lookup matches the hourly path
+    r_lo = _process_gfs_file(file_lo, lead_time, init_datetime, base_dir, norm_file, config, preprocessor)
+    r_hi = _process_gfs_file(file_hi, lead_time, init_datetime, base_dir, norm_file, config, preprocessor)
+    blended = [(1.0 - w) * x + w * y for x, y in zip(r_lo[1:], r_hi[1:])]
+    return (lead_time, *blended)
+
+
+def _process_gfs_file(gfs_file, lead_time, init_datetime, base_dir, norm_file, config, preprocessor):
+    """Extract, regrid and normalize all GFS fields from one file.
+
+    lead_time is the *target* lead hour (used for logging and the APCP future-synoptic
+    lookup); gfs_file may be a neighbouring file when time-interpolating.
+    Missing variables/levels are filled with the normalization mean (0) so the channel
+    count always matches what the model expects.
+    """
     logger.info(f"Processing lead time {lead_time}h from file: {os.path.basename(gfs_file)}")
-    
+
+    if not preprocessor.interpolator.hrrr_coords_loaded:
+        preprocessor.interpolator.load_hrrr_grid_coordinates(config.hrrr_grid_file)
+    grid_shape = config.hrrr_lats.shape
+
+    def _fill(norm_list, raw_list, what):
+        logger.warning(
+            f"{what} missing in {os.path.basename(gfs_file)}; filling with normalization mean. "
+            f"The model was not trained with this field missing - interpret output with care."
+        )
+        norm_list.append(np.zeros(grid_shape, dtype=np.float32))
+        raw_list.append(np.full(grid_shape, np.nan, dtype=np.float32))
+
     # Load normalization dataset (per-variable stats)
     ds_norm = xr.open_dataset(norm_file)
 
@@ -177,10 +247,12 @@ def process_single_lead_hour(args):
             selected = grbs.select(shortName=short, level=config.levels)
         except Exception as e:
             logger.warning(f"Unable to select pressure variable {short}: {e}")
-            continue
+            selected = []
 
         if len(selected) != len(config.levels):
             logger.warning(f"Expected {len(config.levels)} levels for {short} got {len(selected)} (lead {lead_time}h)")
+            by_level = {int(g.level): g for g in selected}
+            selected = [by_level.get(int(lv)) for lv in config.levels]
 
         # Fetch stats array: shape (2, nLevels) if available
         stats = ds_norm[cfg_name].values if cfg_name in ds_norm.variables else None
@@ -188,10 +260,14 @@ def process_single_lead_hour(args):
             logger.warning(f"No normalization stats for {cfg_name}; will compute per-level mean/std")
 
         for l_idx, grb_var in enumerate(selected):
+            if grb_var is None:
+                _fill(normalized_pl, raw_pl, f"{cfg_name} {config.levels[l_idx]} hPa")
+                continue
             try:
                 vals = grb_var.values
             except Exception as e:
                 logger.warning(f"Failed reading values for {short} level {l_idx}: {e}")
+                _fill(normalized_pl, raw_pl, f"{cfg_name} {config.levels[l_idx]} hPa")
                 continue
 
             # Interpolate to HRRR grid
@@ -243,7 +319,8 @@ def process_single_lead_hour(args):
         {'shortName': 'u',      'cfg': 'GFS-UGRD80M', 'typeOfLevel': 'heightAboveGround', 'level': 80},
         {'shortName': 'v',      'cfg': 'GFS-VGRD80M', 'typeOfLevel': 'heightAboveGround', 'level': 80},
         {'shortName': '2d',     'cfg': 'GFS-D2M'},
-        {'shortName': 'tcc',    'cfg': 'GFS-TCDC', "typeOfLevel": "atmosphere"},
+        {'shortName': 'tcc',    'cfg': 'GFS-TCDC', "typeOfLevel": "atmosphere",
+         'alts': [{"typeOfLevel": "entireAtmosphere"}]},
         {'shortName': 'lcc',    'cfg': 'GFS-LCDC'},
         {'shortName': 'mcc',    'cfg': 'GFS-MCDC'},
         {'shortName': 'hcc',    'cfg': 'GFS-HCDC'},
@@ -262,14 +339,17 @@ def process_single_lead_hour(args):
             kwargs['typeOfLevel'] = mapping['typeOfLevel']
         if 'level' in mapping:
             kwargs['level'] = mapping['level']
-        try:
-            msgs = grbs.select(**kwargs)
-            if not msgs:
-                logger.warning(f"Surface var {mapping['cfg']} ({kwargs}) not found")
+        vals = None
+        for kw in [kwargs] + [dict(kwargs, **alt) for alt in mapping.get('alts', [])]:
+            try:
+                msgs = grbs.select(**kw)
+                if msgs:
+                    vals = msgs[0].values
+                    break
+            except Exception:
                 continue
-            vals = msgs[0].values
-        except Exception as e:
-            logger.warning(f"Failed selecting surface var {mapping['cfg']}: {e}")
+        if vals is None:
+            _fill(normalized_sfc, raw_sfc, f"Surface var {mapping['cfg']} ({kwargs})")
             continue
 
         # Interpolate
@@ -545,10 +625,16 @@ def preprocess_grib_data(norm_file: str, datetime_str: str,
         missing_files = []
         preprocessor = GRIBPreprocessor(WeatherPreprocessConfig(hrrr_grid_file))
         
+        n_interp = 0
         for lead_time in range(1, max_lead_time + 1):
             gfs_file = preprocessor.get_valid_time_filename(init_datetime, lead_time, base_dir)
             if not os.path.exists(gfs_file):
-                missing_files.append(f"Lead {lead_time}h: {gfs_file}")
+                if find_bracketing_leads(preprocessor, init_datetime, lead_time, base_dir):
+                    n_interp += 1
+                else:
+                    missing_files.append(f"Lead {lead_time}h: {gfs_file}")
+        if n_interp:
+            logger.info(f"{n_interp} lead hour(s) have no GFS file and will be interpolated in time")
         
         if missing_files:
             logger.error("Missing GRIB files:")
@@ -559,15 +645,20 @@ def preprocess_grib_data(norm_file: str, datetime_str: str,
         logger.info(f"All required GRIB files found for lead times 1 to {max_lead_time}h")
         
         # --- Ensure xESMF weights file exists before parallel jobs ---
-        weights_file = "gfs_to_hrrr_weights.nc"
+        # Use the first available GFS file (may be before lead 1 when interpolating) to get grid info
+        first_gfs_file = next(
+            f for f in (preprocessor.get_valid_time_filename(init_datetime, l, base_dir)
+                        for l in range(1 - MAX_INTERP_OFFSET, max_lead_time + MAX_INTERP_OFFSET + 1))
+            if os.path.exists(f)
+        )
+        grbs = pg.open(first_gfs_file)
+        first_grb = grbs.select(shortName='gh', level=preprocessor.config.levels[0])[0]
+        gfs_lats, gfs_lons = first_grb.latlons()
+        grbs.close()
+        weights_file = weights_filename(gfs_lats)
+        logger.info(f"GFS grid {gfs_lats.shape} -> regrid weights {weights_file}")
         if not os.path.exists(weights_file):
             logger.info(f"Weights file {weights_file} not found. Creating it serially before parallel processing...")
-            # Use the first available GFS file to get grid info
-            first_gfs_file = preprocessor.get_valid_time_filename(init_datetime, 1, base_dir)
-            grbs = pg.open(first_gfs_file)
-            first_grb = grbs.select(shortName='gh', level=preprocessor.config.levels[0])[0]
-            gfs_lats, gfs_lons = first_grb.latlons()
-            grbs.close()
             # Create src_ds and tgt_ds
             src_ds = xr.Dataset({
                 "lat": ("y", gfs_lats[:, 0]),
