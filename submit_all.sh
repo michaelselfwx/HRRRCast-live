@@ -12,15 +12,6 @@ RUNPLOT=${7:-"YES"}
 ENVMODE=${8:-``}
 RUNCLEANUP=${9:-"NO"}
 
-ACCNR=${ACCNR:-gsd-hpcs}
-FCST_ACCNR=${FCST_ACCNR:-$ACCNR}
-FCST_QOS=${FCST_QOS:-gpuwf}
-FCST_RESERVATION=${FCST_RESERVATION:-}
-
-if [ -n "$FCST_RESERVATION" ]; then
-    FCST_RESERVATION="--reservation=${FCST_RESERVATION}"
-fi
-
 # set wall clock time limits
 hr=$(echo "$INIT_TIME" | grep -oP '\d{2}$')
 if [[ "$hr" =~ ^(00|06|12|18)$ ]]; then
