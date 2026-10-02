@@ -4,6 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=@[CPU_TASKS]
 #SBATCH --time=@[PLOT_WALLTIME]
+#SBATCH --mem=360G
 #SBATCH --exclusive
 
 # set vars

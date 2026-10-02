@@ -15,7 +15,7 @@
 #   FCST_WALLTIME / PMM_WALLTIME / ...  override any walltime below
 #   HRRRCAST_CONDA_SH / HRRRCAST_CONDA_ENV  where conda lives / env name (etc/env_grace.sh)
 
-set -x
+[ -n "${DEBUG:-}" ] && set -x   # DEBUG=1 ./submit_grace.sh ... for a full trace
 
 INIT_TIME=${1:-"2024-07-17T23"}
 LEAD_HOUR=${2:-18}
@@ -84,41 +84,41 @@ cd $DATAROOT
 echo "PACKAGEROOT=$PACKAGEROOT,DATAROOT=$DATAROOT,GRACE_GPU=$GRACE_GPU"
 
 atparse < $JOBDIR/job-get-ics.sh > logs/job-get-ics.sh
-jobid1=$(sb logs/job-get-ics.sh); echo "Submitted get_ics: $jobid1"
+jobid1=$(sb logs/job-get-ics.sh) || exit 1; echo "Submitted get_ics: $jobid1"
 
 atparse < $JOBDIR/job-get-bcs.sh > logs/job-get-bcs.sh
-jobid2=$(sb logs/job-get-bcs.sh); echo "Submitted get_bcs: $jobid2"
+jobid2=$(sb logs/job-get-bcs.sh) || exit 1; echo "Submitted get_bcs: $jobid2"
 
 atparse < $JOBDIR/job-make-ics.sh > logs/job-make-ics.sh
-jobid3=$(sb --dependency=afterok:$jobid1 logs/job-make-ics.sh); echo "Submitted make_ics: $jobid3"
+jobid3=$(sb --dependency=afterok:$jobid1 logs/job-make-ics.sh) || exit 1; echo "Submitted make_ics: $jobid3"
 
 atparse < $JOBDIR/job-make-bcs.sh > logs/job-make-bcs.sh
-jobid4=$(sb --dependency=afterok:$jobid2 logs/job-make-bcs.sh); echo "Submitted make_bcs: $jobid4"
+jobid4=$(sb --dependency=afterok:$jobid2 logs/job-make-bcs.sh) || exit 1; echo "Submitted make_bcs: $jobid4"
 
 atparse < $JOBDIR/job-fcst.sh > logs/job-fcst.sh
-jobid5=$(sb --dependency=afterok:$jobid3:$jobid4 --array=0-$((N_GPUS-1)) logs/job-fcst.sh)
+jobid5=$(sb --dependency=afterok:$jobid3:$jobid4 --array=0-$((N_GPUS-1) || exit 1) logs/job-fcst.sh)
 echo "Submitted forecast array: $jobid5"
 last_jobid=$jobid5
 
 if [ "$RUNPLOT" == "YES" ]; then
     atparse < $JOBDIR/job-plot.sh > logs/job-plot.sh
-    jobid6=$(sb --dependency=afterok:$jobid5 --array=0-$((N_GPUS-1)) logs/job-plot.sh)
+    jobid6=$(sb --dependency=afterok:$jobid5 --array=0-$((N_GPUS-1) || exit 1) logs/job-plot.sh)
     echo "Submitted plot array: $jobid6"
     last_jobid=$jobid6
 fi
 
 if [ $N_ENSEMBLES -ge 2 ]; then
     atparse < $JOBDIR/job-compute-pmm.sh > logs/job-compute-pmm.sh
-    jobid7=$(sb --dependency=after:$jobid5 logs/job-compute-pmm.sh); echo "Submitted compute_pmm: $jobid7"
+    jobid7=$(sb --dependency=after:$jobid5 logs/job-compute-pmm.sh) || exit 1; echo "Submitted compute_pmm: $jobid7"
     last_jobid=$jobid7
     if [ "$RUNPLOT" == "YES" ]; then
         atparse < $JOBDIR/job-plot.sh > logs/job-plot-pmm.sh
-        jobid8=$(sb --dependency=afterok:$jobid7 logs/job-plot-pmm.sh); echo "Submitted PMM plot: $jobid8"
+        jobid8=$(sb --dependency=afterok:$jobid7 logs/job-plot-pmm.sh) || exit 1; echo "Submitted PMM plot: $jobid8"
         last_jobid=$jobid8
     fi
 fi
 
 if [ "$RUNCLEANUP" == "YES" ]; then
     atparse < $JOBDIR/job-cleanup.sh > logs/job-cleanup.sh
-    jobidc=$(sb --dependency=afterany:$last_jobid logs/job-cleanup.sh); echo "Submitted cleanup: $jobidc"
+    jobidc=$(sb --dependency=afterany:$last_jobid logs/job-cleanup.sh) || exit 1; echo "Submitted cleanup: $jobidc"
 fi

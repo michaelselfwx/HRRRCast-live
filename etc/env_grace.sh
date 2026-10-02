@@ -1,12 +1,15 @@
 #!/bin/bash
-# Conda environment for TAMU HPRC Grace.
-# Override HRRRCAST_CONDA_SH if your conda/miniforge lives somewhere else, e.g.
-#   export HRRRCAST_CONDA_SH=$HOME/miniforge3/etc/profile.d/conda.sh
-module purge >/dev/null 2>&1 || true
-HRRRCAST_CONDA_SH=${HRRRCAST_CONDA_SH:-${SCRATCH:-/scratch/user/$USER}/miniforge3/etc/profile.d/conda.sh}
-if [ ! -f "$HRRRCAST_CONDA_SH" ]; then
-    echo "ERROR: conda not found at $HRRRCAST_CONDA_SH (set HRRRCAST_CONDA_SH)" >&2
+# Conda environment for TAMU HPRC Grace (sourced by every jobs/grace/*.sh).
+# Same pattern as a typical HPRC job script:  eval "$(conda shell.bash hook)"; conda activate <env>
+# This works because Slurm passes your login PATH (which has conda on it) into the job.
+# If conda isn't on PATH in the job, set HRRRCAST_CONDA_SH to your .../etc/profile.d/conda.sh.
+if command -v conda >/dev/null 2>&1; then
+    eval "$(conda shell.bash hook)"
+elif [ -n "${HRRRCAST_CONDA_SH:-}" ] && [ -f "$HRRRCAST_CONDA_SH" ]; then
+    source "$HRRRCAST_CONDA_SH"
+else
+    echo "ERROR: conda not found on PATH; set HRRRCAST_CONDA_SH=/path/to/etc/profile.d/conda.sh" >&2
     exit 1
 fi
-source "$HRRRCAST_CONDA_SH"
 conda activate ${HRRRCAST_CONDA_ENV:-hrrrcast}
+echo "Using python: $(command -v python)"
