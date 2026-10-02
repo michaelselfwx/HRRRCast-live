@@ -494,11 +494,29 @@ def parse_arguments():
     )
     
     parser.add_argument('inittime',
-                        help='Forecast initialization time in format YYYY-MM-DDTHH (e.g., "2024-05-06T23")')
+                       help='Forecast initialization time in format YYYY-MM-DDTHH (e.g., "2024-05-06T23")')
     parser.add_argument("lead_hour", help="Lead hour for forecast (0, 1, 2, ...)")
     parser.add_argument("--members", nargs='+', required=True, help="List/range of member IDs (e.g., 0-2 4 6-7 pmm)")
     parser.add_argument("--forecast_dir", default="./", help="Directory containing forecast files")
     parser.add_argument("--output_dir", default="./", help="Output directory for plots")
+    parser.add_argument(
+        "--lat-range",
+        dest="lat_range",
+        nargs=2,
+        type=float,
+        default=None,
+        metavar=("LAT_MIN", "LAT_MAX"),
+        help="Latitude zoom bounds for map extent (e.g., --lat-range 36 50)",
+    )
+    parser.add_argument(
+        "--lon-range",
+        dest="lon_range",
+        nargs=2,
+        type=float,
+        default=None,
+        metavar=("LON_MIN", "LON_MAX"),
+        help="Longitude zoom bounds for map extent (e.g., --lon-range 259 272)",
+    )
     parser.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                        help="Logging level")
     

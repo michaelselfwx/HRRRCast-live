@@ -83,9 +83,13 @@ footer{position:fixed;left:0;right:0;bottom:0;z-index:5;background:var(--panel);
   <div id="time"></div>
   <div id="load"></div>
   <div class="kbd">← → step · space play · ↑ ↓ level · click map to enlarge</div>
+  <div class="kbd" id="gen"></div>
 </footer>
 
-<script src="viewer_manifest.js"></script>
+<script>
+// load the manifest with a cache-buster so the browser never shows a stale index
+document.write('<script src="viewer_manifest.js?t=' + Date.now() + '"><\/script>');
+</script>
 <script>
 (function(){
 const M = window.HRRRCAST_MANIFEST;
@@ -227,7 +231,15 @@ function draw(){
     const cell = cells[m], img = cell.querySelector("img"), miss = cell.querySelector(".missing");
     const ok = hasImg(m, lead);
     cell.querySelector(".lbl span").textContent = "f" + pad2(lead);
-    if (ok){ const src = imgPath(m, lead); if (img.getAttribute("src") !== src) img.src = src; img.hidden = false; miss.hidden = true; }
+    if (ok){
+      const src = imgPath(m, lead);
+      if (img.getAttribute("src") !== src){
+        img.onerror = () => { img.hidden = true; miss.hidden = false;
+          miss.textContent = "image missing: " + src + " (re-run make_viewer_index.py?)"; };
+        img.src = src;
+      }
+      img.hidden = false; miss.hidden = true; miss.textContent = "not available";
+    }
     else { img.hidden = true; miss.hidden = false; }
   }
   $("slider").value = S.idx;
@@ -314,6 +326,7 @@ document.addEventListener("keydown", e => {
   }
 });
 
+$("gen").textContent = "index: " + (M.generated || "?");
 fillCases();
 const startLead = readHash();
 S.case = S.case || $("case").options[0].value;

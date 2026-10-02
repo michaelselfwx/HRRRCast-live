@@ -23,7 +23,7 @@ from pathlib import Path
 CASE_RE = re.compile(r"^\d{8}$")
 HOUR_RE = re.compile(r"^\d{2}$")
 # member folder: m00 / memm00 (older plot.py) / mem0 / avg / memavg / spr ...  + _leadNNh
-MEMDIR_RE = re.compile(r"^(?:mem)?(m?\d+|avg|spr|pmm)_lead(\d+)h$")
+MEMDIR_RE = re.compile(r"^(?:mem)?(m?\d+|avg|spr|pmm)_lead(\d+)h$")  # m00, older memm00 / mem0, avg, spr
 PNG_RE = re.compile(r"^(.+)_lead(\d+)h\.png$")
 
 
