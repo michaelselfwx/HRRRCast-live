@@ -20,6 +20,8 @@ Functions:
     forward_noise, compute_epsilon, ddpm, ddim, ddim_heun, dpmpp_2m
 """
 
+from __future__ import annotations  # allow 'tf.Tensor | None' hints on Python < 3.10
+
 import numpy as np
 import tensorflow as tf
 from typing import Union

@@ -430,7 +430,7 @@ def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, i
     try:
         valid_datetime = init_datetime + timedelta(hours=h)
         timestamp_str = f"{init_year}-{init_month}-{init_day} {init_hh}:00 UTC"
-        output_subdir = f"{output_dir}/{date_str}/mem{member}_lead{h:02d}h"
+        output_subdir = f"{output_dir}/{date_str}/{member}_lead{h:02d}h"  # member is m00 / avg / spr
         utils.make_directory(output_subdir)
         plotter.plot_pressure_level_variables(ds, h, output_subdir, timestamp_str)
         plotter.plot_surface_variables(ds, h, output_subdir, timestamp_str)
