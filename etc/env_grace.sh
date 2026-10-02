@@ -30,4 +30,11 @@ case "$(command -v python)" in
     */envs/"$HRRRCAST_CONDA_ENV"/bin/python) ;;
     *) echo "ERROR: python is $(command -v python), not the $HRRRCAST_CONDA_ENV env" >&2; exit 1 ;;
 esac
+# pip-installed wheels (protobuf, tensorflow) link against libstdc++ but carry no rpath to the
+# env, so the loader falls back to the older /lib64/libstdc++.so.6 (no GLIBCXX_3.4.29) and the
+# import fails. Put the env's own lib/ first so its newer libstdc++ is used.
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+if ! strings "$CONDA_PREFIX/lib/libstdc++.so.6" 2>/dev/null | grep -q GLIBCXX_3.4.29; then
+    echo "WARNING: $CONDA_PREFIX/lib/libstdc++.so.6 lacks GLIBCXX_3.4.29; run: conda install -n $HRRRCAST_CONDA_ENV -c conda-forge 'libstdcxx-ng>=12'" >&2
+fi
 echo "Using python: $(command -v python)"
