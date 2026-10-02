@@ -57,7 +57,9 @@ class Netcdf2Grib:
         self.pdtn_default = pdtn_default
         self.drtn_default = drtn_default
 
-    def construct_section3_hrrr(self, nx: int = 1799, ny: int = 1059) -> np.ndarray:
+    @staticmethod
+    def construct_section3_hrrr(nx: int = 1799, ny: int = 1059,
+                                lat1: float = 21.138123, lon1: float = 237.280472) -> np.ndarray:
         """Construct GRIB2 Section 3 for HRRR-like CONUS Lambert Conformal grid at 3 km.
 
         This uses canonical HRRR projection parameters and the full-resolution dimensions
@@ -77,8 +79,8 @@ class Netcdf2Grib:
         canonical HRRR parameters. You can override via NETCDF2GRIB_SECTION3.
         """
         # Canonical HRRR LCC parameters (matching HRRR docs)
-        lat1 = 21.138123    # degrees North
-        lon1 = 237.280472   # degrees East
+        # lat1/lon1: first (south-west) grid point; defaults are the full HRRR CONUS grid.
+        # Pass the corner of a sub-domain to describe a cropped grid.
         lov = 262.5         # degrees East
         latin1 = 38.5       # degrees North
         latin2 = 38.5       # degrees North

@@ -22,6 +22,7 @@ import threading
 
 import numpy as np
 import tensorflow as tf
+tf.keras.mixed_precision.set_global_policy('mixed_bfloat16')
 import xarray as xr
 import pandas as pd
 
@@ -54,6 +55,104 @@ from cf_attributes import apply_cf_attributes, get_cf_encoding
 from compute_pmm import compute_PMM
 
 logger = None
+
+
+class _SubsetData(dict):
+    """dict that mimics the NpzFile interface used elsewhere (``.files``).
+
+    Keys not stored (e.g. pickled object arrays we skipped) fall back to the
+    original NpzFile, so they behave exactly as before.
+    """
+
+    def __init__(self, fallback):
+        super().__init__()
+        self._fallback = fallback
+
+    def __missing__(self, key):
+        return self._fallback[key]
+
+    def __contains__(self, key):
+        return dict.__contains__(self, key) or key in self._fallback.files
+
+    @property
+    def files(self):
+        return list(self._fallback.files)
+
+
+def _parse_subset(spec: str) -> Tuple[int, int, int, int]:
+    """Parse 'y0:y1,x0:x1' into ints."""
+    try:
+        ys, xs = spec.split(",")
+        y0, y1 = (int(v) for v in ys.split(":"))
+        x0, x1 = (int(v) for v in xs.split(":"))
+    except Exception:
+        raise ValueError(f"--subset must look like y0:y1,x0:x1 (got {spec!r})")
+    return y0, y1, x0, x1
+
+
+def _bbox_to_subset(bbox: str, lats: np.ndarray, lons: np.ndarray) -> Tuple[int, int, int, int]:
+    """Convert 'lat_min,lat_max,lon_min,lon_max' to the tightest grid window covering it."""
+    try:
+        la0, la1, lo0, lo1 = (float(v) for v in bbox.split(","))
+    except Exception:
+        raise ValueError(f"--bbox must look like lat_min,lat_max,lon_min,lon_max (got {bbox!r})")
+    lons180 = ((lons + 180.0) % 360.0) - 180.0
+    lo0 = ((lo0 + 180.0) % 360.0) - 180.0
+    lo1 = ((lo1 + 180.0) % 360.0) - 180.0
+    mask = (lats >= la0) & (lats <= la1) & (lons180 >= lo0) & (lons180 <= lo1)
+    if not mask.any():
+        raise ValueError(f"--bbox {bbox} does not overlap the HRRR grid")
+    rows = np.where(mask.any(axis=1))[0]
+    cols = np.where(mask.any(axis=0))[0]
+    return int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
+
+
+def _model_internal_pad(model_path: str) -> Tuple[int, int]:
+    """Return the (rows, cols) the model's ReflectPadLayer adds before the U-Net.
+
+    The network pads its input by a fixed amount (chosen so 1059x1799 becomes
+    divisible by 8) and unpads at the end. A sub-domain must satisfy the same
+    rule: (H + pad_h) and (W + pad_w) divisible by 2**num_poolings.
+    """
+    import json, zipfile
+    try:
+        cfg = json.loads(zipfile.ZipFile(model_path).read("config.json"))
+        stack = [cfg]
+        while stack:
+            c = stack.pop()
+            if isinstance(c, dict):
+                if c.get("class_name") == "ReflectPadLayer":
+                    pad = c["config"]["padding"]
+                    if len(pad) == 4:   # [[batch], [H], [W], [C]]
+                        pad = pad[1:3]
+                    return int(sum(pad[0])), int(sum(pad[1]))
+                stack.extend(c.values())
+            elif isinstance(c, list):
+                stack.extend(c)
+    except Exception as e:
+        logger.warning(f"Could not read ReflectPadLayer padding from {model_path}: {e}")
+    return 0, 0
+
+
+def _round_subset(y0: int, y1: int, x0: int, x1: int, H: int, W: int,
+                  multiple: int, pad: int, extra_h: int = 0, extra_w: int = 0) -> Tuple[int, int, int, int]:
+    """Grow a window by `pad` points per side, then pick the smallest side length
+    L >= requested with (L + extra) % multiple == 0 (extra = the model's internal
+    reflect padding), keep it centred, and clamp to the grid."""
+    def fit(a, b, n, extra):
+        a, b = a - pad, b + pad
+        length = b - a
+        m = max(multiple, 1)
+        length = -(-(length + extra) // m) * m - extra
+        max_len = ((n + extra) // m) * m - extra
+        length = min(length, max_len)
+        centre = (a + b) // 2
+        a = centre - length // 2
+        a = max(0, min(a, n - length))
+        return a, a + length
+    y0, y1 = fit(y0, y1, H, extra_h)
+    x0, x1 = fit(x0, x1, W, extra_w)
+    return y0, y1, x0, x1
 
 
 def make_noise(
@@ -121,6 +220,34 @@ class PreprocessedDataLoader:
             logger.error(f"Error loading preprocessed data: {e}")
             raise
     
+    def apply_subset(self, y0: int, y1: int, x0: int, x1: int) -> None:
+        """Crop every gridded array in the NPZ to rows y0:y1, cols x0:x1.
+
+        2D fields (lats, lons, LAND_raw, ...) are cropped on their two axes; 4D
+        model_input (T, H, W, C) on axes 1 and 2. Scalars/metadata are untouched.
+        """
+        H = self.metadata['grid_height']
+        W = self.metadata['grid_width']
+        cropped = _SubsetData(self.data)
+        for key in self.data.files:
+            try:
+                arr = self.data[key]
+            except ValueError:
+                # pickled object array (metadata) -- not gridded, leave it in the NpzFile
+                continue
+            if arr.ndim == 2 and arr.shape == (H, W):
+                arr = np.ascontiguousarray(arr[y0:y1, x0:x1])
+            elif arr.ndim == 4 and arr.shape[1:3] == (H, W):
+                arr = np.ascontiguousarray(arr[:, y0:y1, x0:x1, :])
+            cropped[key] = arr
+        self.data = cropped
+        self.metadata['grid_height'] = y1 - y0
+        self.metadata['grid_width'] = x1 - x0
+        logger.info(
+            f"Subset {os.path.basename(self.preprocessed_file)} to rows {y0}:{y1}, cols {x0}:{x1} "
+            f"-> model_input {self.data['model_input'].shape}"
+        )
+
     def get_model_input(self) -> np.ndarray:
         """Get the model input array."""
         return self.data['model_input']
@@ -575,7 +702,13 @@ class WeatherForecaster:
             mem_str = f"m{int(member):02d}"
         grib2_path = outdir / f"hrrrcast.{mem_str}.t{init_datetime.hour:02d}z.pgrb2.f{hour:02d}"
 
-        converter = Netcdf2Grib()
+        lat2d = np.asarray(ds_hour["latitude"].values)
+        lon2d = np.asarray(ds_hour["longitude"].values)
+        ny, nx = lat2d.shape[-2:]
+        section3 = Netcdf2Grib.construct_section3_hrrr(
+            nx=nx, ny=ny, lat1=float(lat2d[0, 0]), lon1=float(lon2d[0, 0]) % 360.0
+        )
+        converter = Netcdf2Grib(section3=section3)
         # Ensure ds_hour has exactly one lead_time equal to 'hour'
         if 'lead_time' in ds_hour.coords:
             try:
@@ -1073,7 +1206,7 @@ class WeatherForecaster:
             )
             logger.info("Forecast completed successfully (per-hour outputs written during rollout)")
         except Exception as e:
-            logger.error(f"Forecast failed: {e}")
+            logger.exception(f"Forecast failed: {type(e).__name__}: {e}")
             raise
 
 def run_weather_forecast(forecaster: WeatherForecaster, model: ForecastModel, lead_hours: int, model_input: np.ndarray, output_dir: str):
@@ -1095,7 +1228,8 @@ def parse_arguments():
     parser.add_argument("model_path", help="Path to the trained model")
     parser.add_argument('inittime', help='Forecast initialization time in format YYYY-MM-DDTHH (e.g., "2024-05-06T23")')
     parser.add_argument("lead_hours", type=int, help="Lead time in hours")
-    parser.add_argument("--num_members", type=int, default=1, help="Number of ensemble members to generate")
+    parser.add_argument("--num_members", type=int, default=1,
+                        help="Ensemble size (sets GFS phase-shift spread); raised automatically to cover --members")
     parser.add_argument("--members", nargs='+', required=True, help="List of ensemble member IDs (e.g., 0 1 2 or 0,1,2)")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size for model inference")
     parser.add_argument("--no_diffusion", default=False, action="store_true", help="Turn off diffusion")
@@ -1105,6 +1239,17 @@ def parse_arguments():
                        help="Logging level")
     parser.add_argument("--pmm_alpha", type=float, default=0.7,
                         help="Nudge factor toward PMM mean for member outputs (0..1)")
+    parser.add_argument("--no_nudging", default=False, action="store_true",
+                        help="Disable nudging (member perturbation toward consensus)")
+    sub = parser.add_mutually_exclusive_group()
+    sub.add_argument("--subset", default=None,
+                     help="Run on a sub-domain given as grid indices y0:y1,x0:x1 (row 0 = south, col 0 = west)")
+    sub.add_argument("--bbox", default=None,
+                     help="Run on a sub-domain covering lat_min,lat_max,lon_min,lon_max (degrees, lon in -180..180)")
+    parser.add_argument("--subset_pad", type=int, default=48,
+                        help="Grid points added on each side of --bbox as a boundary buffer (~3 km each)")
+    parser.add_argument("--subset_multiple", type=int, default=8,
+                        help="(side + model reflect padding) must be a multiple of this: 2**(number of U-Net poolings)")
     parser.add_argument("--noise_rho", type=float, default=0.9,
                         help="Noise blend/correlation parameter (0..1)")
     
@@ -1133,6 +1278,11 @@ def main():
         for m in args.members:
             members.extend(expand_member_arg(m))
         members = sorted(set(members))  # Remove duplicates and sort
+        # num_members sets the ensemble size used for GFS phase shifts; it must
+        # cover every requested member ID (default of 1 would KeyError on member 1).
+        if args.num_members < max(members) + 1:
+            logger.info(f"--num_members {args.num_members} too small for members {members}; using {max(members) + 1}")
+            args.num_members = max(members) + 1
 
         # Load preprocessed data and model ONCE
         init_datetime, init_year, init_month, init_day, init_hh = utils.validate_datetime(args.inittime)
@@ -1142,6 +1292,32 @@ def main():
         gfs_preprocessed_file = f"{args.base_dir}/{date_str}/gfs_{filedate_str}.npz"
         data_loader_hrrr = PreprocessedDataLoader(hrrr_preprocessed_file)
         data_loader_gfs = PreprocessedDataLoader(gfs_preprocessed_file)
+
+        if args.subset or args.bbox:
+            H = data_loader_hrrr.metadata['grid_height']
+            W = data_loader_hrrr.metadata['grid_width']
+            if args.subset:
+                y0, y1, x0, x1 = _parse_subset(args.subset)
+                pad = 0
+                requested = (y0, y1, x0, x1)
+            else:
+                lats_full, lons_full = data_loader_hrrr.get_coordinates()
+                y0, y1, x0, x1 = _bbox_to_subset(args.bbox, lats_full, lons_full)
+                pad = args.subset_pad
+                requested = None
+            extra_h, extra_w = _model_internal_pad(args.model_path)
+            y0, y1, x0, x1 = _round_subset(y0, y1, x0, x1, H, W, args.subset_multiple, pad,
+                                           extra_h, extra_w)
+            if (y0, y1, x0, x1) != requested and args.subset:
+                logger.info(f"Adjusted --subset {args.subset} to {y0}:{y1},{x0}:{x1} to fit the model's padding")
+            for loader in (data_loader_hrrr, data_loader_gfs):
+                loader.apply_subset(y0, y1, x0, x1)
+            lats_sub, lons_sub = data_loader_hrrr.get_coordinates()
+            logger.info(
+                f"Sub-domain {y1 - y0}x{x1 - x0}: lat {lats_sub.min():.2f}..{lats_sub.max():.2f}, "
+                f"lon {lons_sub.min():.2f}..{lons_sub.max():.2f} (rerun with --subset {y0}:{y1},{x0}:{x1})"
+            )
+
         model = ForecastModel(args.model_path)
 
         # Precompute model_input ONCE
