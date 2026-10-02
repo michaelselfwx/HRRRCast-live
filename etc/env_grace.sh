@@ -1,15 +1,21 @@
 #!/bin/bash
 # Conda environment for TAMU HPRC Grace (sourced by every jobs/grace/*.sh).
-# Same pattern as a typical HPRC job script:  eval "$(conda shell.bash hook)"; conda activate <env>
-# This works because Slurm passes your login PATH (which has conda on it) into the job.
-# If conda isn't on PATH in the job, set HRRRCAST_CONDA_SH to your .../etc/profile.d/conda.sh.
-if command -v conda >/dev/null 2>&1; then
-    eval "$(conda shell.bash hook)"
-elif [ -n "${HRRRCAST_CONDA_SH:-}" ] && [ -f "$HRRRCAST_CONDA_SH" ]; then
-    source "$HRRRCAST_CONDA_SH"
+#
+# Grace's conda is the Miniconda3 module (/sw/eb/sw/Miniconda3/...). A batch job inherits the
+# PATH of the shell you submitted from, so if `hrrrcast` was active there, the env's python
+# comes first on PATH and the module's `conda` script breaks ("No module named 'conda'").
+# Loading the module puts its own python back in front, then we activate properly so the
+# env's activate.d hooks (e.g. ESMFMKFILE for xesmf) run.
+#
+# Overrides: HRRRCAST_CONDA_MODULE (default Miniconda3/24.11.1), HRRRCAST_CONDA_ENV (default hrrrcast)
+module load ${HRRRCAST_CONDA_MODULE:-Miniconda3/24.11.1} >/dev/null 2>&1 \
+    || echo "WARNING: could not load ${HRRRCAST_CONDA_MODULE:-Miniconda3/24.11.1}" >&2
+CONDA_ROOT=${EBROOTMINICONDA3:-$(dirname "$(dirname "${CONDA_EXE:-/nonexistent/bin/conda}")")}
+if [ -f "$CONDA_ROOT/etc/profile.d/conda.sh" ]; then
+    source "$CONDA_ROOT/etc/profile.d/conda.sh"
 else
-    echo "ERROR: conda not found on PATH; set HRRRCAST_CONDA_SH=/path/to/etc/profile.d/conda.sh" >&2
+    echo "ERROR: conda.sh not found under $CONDA_ROOT (set HRRRCAST_CONDA_MODULE)" >&2
     exit 1
 fi
-conda activate ${HRRRCAST_CONDA_ENV:-hrrrcast}
+conda activate ${HRRRCAST_CONDA_ENV:-hrrrcast} || { echo "ERROR: conda activate ${HRRRCAST_CONDA_ENV:-hrrrcast} failed" >&2; exit 1; }
 echo "Using python: $(command -v python)"
