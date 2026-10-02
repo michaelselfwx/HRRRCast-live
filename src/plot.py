@@ -9,8 +9,8 @@ Usage:
         python plot_forecast.py <init_time> <lead_hour> <member> [--forecast_dir DIR] [--output_dir DIR]
     
         Expects per-hour NetCDF files:
-            - Member average (PMM/mean): hrrrcast_memavg_fXX.nc
-            - Individual members:        hrrrcast_memN_fXX.nc
+            - Member average (PMM/mean): hrrrcast_avg_fXX.nc
+            - Individual members:        hrrrcast_mN_fXX.nc
 """
 
 import argparse
@@ -18,7 +18,7 @@ import logging
 import os
 import sys
 from datetime import timedelta
-from typing import Optional
+from typing import List, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import matplotlib.pyplot as plt
@@ -35,8 +35,21 @@ except ImportError:
 # Local imports
 import utils
 from utils import setup_logging
+from cf_attributes import VARIABLE_METADATA
 
 logger = None
+
+
+def _normalize_range(range_values: Optional[List[float]], range_name: str) -> Optional[tuple]:
+    """Validate and normalize a two-value [min, max] numeric range."""
+    if range_values is None:
+        return None
+    if len(range_values) != 2:
+        raise ValueError(f"{range_name} must contain exactly 2 values: min max")
+    low, high = float(range_values[0]), float(range_values[1])
+    if low == high:
+        raise ValueError(f"{range_name} min and max cannot be equal")
+    return (min(low, high), max(low, high))
 
 
 class ForecastPlotterConfig:
@@ -67,79 +80,7 @@ class ForecastPlotterConfig:
         self.figure_size = (12, 8)
         self.dpi = 300
         self.cmap_default = 'viridis'
-        
-        # Variable-specific plotting parameters
-        # Expanded variable configs (surface + pressure)
-        self.var_configs = {
-            # Pressure-level
-            'UGRD':   {'cmap': 'RdBu_r',    'units': 'm/s',   'long_name': 'U-component of Wind'},
-            'VGRD':   {'cmap': 'RdBu_r',    'units': 'm/s',   'long_name': 'V-component of Wind'},
-            'VVEL':   {'cmap': 'RdBu_r',    'units': 'Pa/s',  'long_name': 'Vertical Velocity'},
-            'TMP':    {'cmap': 'coolwarm',  'units': 'K',     'long_name': 'Temperature'},
-            'HGT':    {'cmap': 'terrain',   'units': 'm',     'long_name': 'Geopotential Height'},
-            'SPFH':   {'cmap': 'Blues',     'units': 'kg/kg', 'long_name': 'Specific Humidity'},
-            # Surface
-            'PRES':    {'cmap': 'viridis',  'units': 'Pa',    'long_name': 'Surface Pressure'},
-            'MSLMA':   {'cmap': 'viridis',  'units': 'Pa',    'long_name': 'Mean Sea Level Pressure'},
-            'REFC':    {'cmap': 'pyart_NWSRef', 'units': 'dBZ','long_name': 'Composite Reflectivity'},
-            'T2M':     {'cmap': 'coolwarm', 'units': 'K',     'long_name': '2m Temperature'},
-            'UGRD10M': {'cmap': 'RdBu_r',   'units': 'm/s',   'long_name': '10m U Wind'},
-            'VGRD10M': {'cmap': 'RdBu_r',   'units': 'm/s',   'long_name': '10m V Wind'},
-            'UGRD80M': {'cmap': 'RdBu_r',   'units': 'm/s',   'long_name': '80m U Wind'},
-            'VGRD80M': {'cmap': 'RdBu_r',   'units': 'm/s',   'long_name': '80m V Wind'},
-            'D2M':     {'cmap': 'coolwarm', 'units': 'K',     'long_name': '2m Dewpoint'},
-            'R2M':     {'cmap': 'YlGnBu',   'units': '%',     'long_name': '2m Relative Humidity'},
-            'SPFH2M':  {'cmap': 'Blues',    'units': 'kg/kg', 'long_name': '2m Specific Humidity'},
-            'POT2M':   {'cmap': 'coolwarm','units': 'K',     'long_name': '2m Potential Temperature'},
-            'TCDC':    {'cmap': 'Greys',    'units': 'frac',  'long_name': 'Total Cloud Cover'},
-            'LCDC':    {'cmap': 'Blues',    'units': 'frac',  'long_name': 'Low Cloud Cover'},
-            'MCDC':    {'cmap': 'Greens',   'units': 'frac',  'long_name': 'Medium Cloud Cover'},
-            'HCDC':    {'cmap': 'Reds',     'units': 'frac',  'long_name': 'High Cloud Cover'},
-            'VIS':     {'cmap': 'plasma_r', 'units': 'm',     'long_name': 'Visibility'},
-            'APCP':    {'cmap': 'Blues',    'units': 'mm',    'long_name': 'Accumulated Precipitation'},
-            'HGTCC':   {'cmap': 'cividis',  'units': 'm',     'long_name': 'Cloud Ceiling Height'},
-            'CAPE':    {'cmap': 'Spectral_r','units': 'J/kg', 'long_name': 'CAPE'},
-            'CIN':     {'cmap': 'PuOr',     'units': 'J/kg',  'long_name': 'CIN'},
-            'PWAT':    {'cmap': 'YlGnBu',   'units': 'mm',    'long_name': 'Precipitable Water'},
-            'CRAIN':   {'cmap': 'Blues',    'units': 'mm',    'long_name': 'Conditional Rain Rate'},
-            'RAIN_MASK': {'cmap': 'Greys',  'units': '1',     'long_name': 'Rain Mask'},
-            'CFRZR':   {'cmap': 'PuBu',     'units': 'mm',    'long_name': 'Conditional Freezing Rain Rate'},
-            'FRZR_MASK': {'cmap': 'Greys',  'units': '1',     'long_name': 'Freezing Rain Mask'},
-            'WARM_LAYER_DEPTH': {'cmap': 'YlOrRd', 'units': 'hPa', 'long_name': 'Warm Layer Depth'},
-            'COLD_LAYER_DEPTH': {'cmap': 'PuBuGn', 'units': 'hPa', 'long_name': 'Cold Layer Depth'},
-            'GUST':    {'cmap': 'viridis',  'units': 'm/s',   'long_name': 'Wind Gust'},
-            'GUST_FACTOR': {'cmap': 'magma', 'units': '1',    'long_name': 'Gust Factor'},
-            'GUST_CONV': {'cmap': 'magma',  'units': 'm/s',   'long_name': 'Convective Gust Enhancement'},
-            'WIND_10M': {'cmap': 'viridis', 'units': 'm/s',   'long_name': '10m Wind Speed'},
-            'WIND_MAX': {'cmap': 'viridis', 'units': 'm/s',   'long_name': 'Maximum Wind Speed'},
-            'VUCSH_0_1km': {'cmap': 'RdBu_r','units': '1/s',  'long_name': 'U Shear Rate 0-1 km'},
-            'VVCSH_0_1km': {'cmap': 'RdBu_r','units': '1/s',  'long_name': 'V Shear Rate 0-1 km'},
-            'VUCSH_0_6km': {'cmap': 'RdBu_r','units': '1/s',  'long_name': 'U Shear Rate 0-6 km'},
-            'VVCSH_0_6km': {'cmap': 'RdBu_r','units': '1/s',  'long_name': 'V Shear Rate 0-6 km'},
-            'RELV_max_0_1km': {'cmap': 'Spectral_r', 'units': '1/s', 'long_name': 'Max Relative Vorticity 0-1 km'},
-            'RELV_max_0_2km': {'cmap': 'Spectral_r', 'units': '1/s', 'long_name': 'Max Relative Vorticity 0-2 km'},
-            'USTM_0_6km': {'cmap': 'RdBu_r','units': 'm/s',  'long_name': 'Storm Motion U 0-6 km'},
-            'VSTM_0_6km': {'cmap': 'RdBu_r','units': 'm/s',  'long_name': 'Storm Motion V 0-6 km'},
-            'HLCY_0_1km': {'cmap': 'PuOr',  'units': 'm^2/s^2', 'long_name': 'Storm-Relative Helicity 0-1 km'},
-            'HLCY_0_3km': {'cmap': 'PuOr',  'units': 'm^2/s^2', 'long_name': 'Storm-Relative Helicity 0-3 km'},
-            'MXUPHL_max_0_2km': {'cmap': 'RdPu', 'units': 'm^2/s^2', 'long_name': 'Max Updraft Helicity 0-2 km'},
-            'MNUPHL_min_0_2km': {'cmap': 'RdPu', 'units': 'm^2/s^2', 'long_name': 'Min Updraft Helicity 0-2 km'},
-            'MXUPHL_max_0_3km': {'cmap': 'RdPu', 'units': 'm^2/s^2', 'long_name': 'Max Updraft Helicity 0-3 km'},
-            'MNUPHL_min_0_3km': {'cmap': 'RdPu', 'units': 'm^2/s^2', 'long_name': 'Min Updraft Helicity 0-3 km'},
-            'MXUPHL_max_2_5km': {'cmap': 'RdPu', 'units': 'm^2/s^2', 'long_name': 'Max Updraft Helicity 2-5 km'},
-            'MNUPHL_min_2_5km': {'cmap': 'RdPu', 'units': 'm^2/s^2', 'long_name': 'Min Updraft Helicity 2-5 km'},
-            'MAXUVV_max_100_1000mb': {'cmap': 'Reds', 'units': 'm/s', 'long_name': 'Max Upward Vertical Velocity 100-1000 mb'},
-            'MAXDVV_max_100_1000mb': {'cmap': 'Blues', 'units': 'm/s', 'long_name': 'Max Downward Vertical Velocity 100-1000 mb'},
-            'HGT_0C':   {'cmap': 'terrain', 'units': 'm',    'long_name': '0°C Isotherm Height AGL'},
-            'UGRD_0C':  {'cmap': 'RdBu_r',  'units': 'm/s',  'long_name': 'U Wind at 0°C Isotherm'},
-            'VGRD_0C':  {'cmap': 'RdBu_r',  'units': 'm/s',  'long_name': 'V Wind at 0°C Isotherm'},
-            'WIND_0C':  {'cmap': 'viridis','units': 'm/s',  'long_name': 'Wind Speed at 0°C Isotherm'},
-            'SPFH_0C':  {'cmap': 'Blues',  'units': 'kg/kg','long_name': 'Specific Humidity at 0°C Isotherm'},
-            'RH_0C':    {'cmap': 'YlGnBu', 'units': '%',    'long_name': 'Relative Humidity at 0°C Isotherm'},
-            'DU_SFC_0C': {'cmap': 'RdBu_r', 'units': 'm/s',  'long_name': 'U Wind Shear Surface to 0°C'},
-            'DV_SFC_0C': {'cmap': 'RdBu_r', 'units': 'm/s',  'long_name': 'V Wind Shear Surface to 0°C'},
-            'SHEAR_SFC_0C': {'cmap': 'viridis', 'units': 'm/s', 'long_name': 'Wind Shear Magnitude Surface to 0°C'},
-        }
+        self.zoom_extent = None
 
 
 class ForecastPlotter:
@@ -169,13 +110,14 @@ class ForecastPlotter:
         base = plt.get_cmap(name)
         return [mcolors.to_hex(base(i/(n-1))) for i in range(n)]
 
+
     @staticmethod
     def get_refc_cmap() -> tuple:
-        """Return colormap + norm for composite reflectivity (REFC)."""
-        reflectivity_levels = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70]
+        """Return a colormap and normalization for reflectivity (REFC)."""
+        reflectivity_levels = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75]
         reflectivity_colors = [
-            "#FFFFFF", "#B0E2FF", "#7EC0EE", "#00FA9A", "#32CD32", "#FFFF00", "#FFD700",
-            "#FFA500", "#FF4500", "#FF0000", "#8B0000", "#9400D3", "#8B008B", "#4B0082",
+            "#FFFFFF", "#00F9F9", "#0080FF", "#0004FF", "#00FF00", "#00C100", "#008000", "#F5FA00",
+            "#FFBF00", "#FF8200", "#FF0400", "#BF0000", "#820000", "#FF00FF", "#9062CD",
         ]
         vmin, vmax = min(reflectivity_levels), max(reflectivity_levels)
         cmap = mcolors.ListedColormap(reflectivity_colors)
@@ -237,10 +179,10 @@ class ForecastPlotter:
                    title_suffix: str = "") -> plt.Figure:
         """Create a plot for a given variable."""
         
-        # Get variable configuration
-        var_config = self.config.var_configs.get(var_name, {})
-        units = var_config.get('units', '')
-        long_name = var_config.get('long_name', var_name)
+        # Get variable configuration from VARIABLE_METADATA
+        var_meta = VARIABLE_METADATA.get(var_name, {})
+        units = var_meta.get('units', '')
+        long_name = var_meta.get('long_name', var_name)
         
         # Special handling for categorical / thresholded fields
         norm = None
@@ -257,7 +199,7 @@ class ForecastPlotter:
         elif var_name == 'HGTCC':
             cmap, norm, vmin, vmax = self.get_hgtcc_cmap()
         else:
-            cmap = var_config.get('cmap', self.config.cmap_default)
+            cmap = var_meta.get('cmap', self.config.cmap_default)
             norm = None
             vmin = np.nanmin(data)
             vmax = np.nanmax(data)
@@ -269,6 +211,8 @@ class ForecastPlotter:
             ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
             ax.add_feature(cfeature.BORDERS, linewidth=0.5)
             ax.add_feature(cfeature.STATES, linewidth=0.3)
+            if self.config.zoom_extent is not None:
+                ax.set_extent(self.config.zoom_extent, crs=ccrs.PlateCarree())
 
             ax.gridlines(draw_labels=True)
         else:
@@ -408,6 +352,8 @@ class ForecastPlotter:
                     ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
                     ax.add_feature(cfeature.BORDERS, linewidth=0.5)
                     ax.add_feature(cfeature.STATES, linewidth=0.3)
+                    if self.config.zoom_extent is not None:
+                        ax.set_extent(self.config.zoom_extent, crs=ccrs.PlateCarree())
                     axes.append(ax)
             else:
                 axes = axes.flatten()
@@ -432,9 +378,9 @@ class ForecastPlotter:
                 else:
                     data = ds[var_name].isel(time=0, lead_time=0).values
                 
-                # Get colormap
-                var_config = self.config.var_configs.get(var_display, {})
-                cmap = var_config.get('cmap', self.config.cmap_default)
+                # Get colormap from VARIABLE_METADATA
+                var_meta = VARIABLE_METADATA.get(var_display, {})
+                cmap = var_meta.get('cmap', self.config.cmap_default)
                 
                 # Special handling for REFC/APCP
                 if var_display == 'REFC':
@@ -495,6 +441,7 @@ def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, i
 
 def plot_forecast_data(datetime_str: str,
                       lead_hour: str, member: str,
+                      zoom_extent: Optional[tuple] = None,
                       forecast_dir: str = "./", output_dir: str = "./"):
     """Main plotting function. Plots all hours from 1 to lead_hour (inclusive) in parallel."""
     try:
@@ -504,10 +451,14 @@ def plot_forecast_data(datetime_str: str,
         lead_hour_int = int(lead_hour)
         
         # Normalize 'pmm' alias to 'avg'
-        member_norm = 'avg' if str(member).lower() in ('avg', 'pmm') else member
+
+        mem_str = str(member)
+        if mem_str not in {"avg", "spr"}:
+            mem_str = f"m{int(member):02d}"
 
         # Initialize plotter config (for passing to subprocesses)
         config = ForecastPlotterConfig()
+        config.zoom_extent = zoom_extent
         config_dict = config.__dict__
         
         n_workers = lead_hour_int
@@ -516,14 +467,11 @@ def plot_forecast_data(datetime_str: str,
         args_list = []
         for h in range(1, lead_hour_int + 1):
             # Build per-hour file path
-            if str(member_norm).lower() == 'avg':
-                ds_path = f"{forecast_dir}/{date_str}/hrrrcast_memavg_f{h:02d}.nc"
-            else:
-                ds_path = f"{forecast_dir}/{date_str}/hrrrcast_mem{member_norm}_f{h:02d}.nc"
+            ds_path = f"{forecast_dir}/{date_str}/hrrrcast_{mem_str}_f{h:02d}.nc"
             if not os.path.exists(ds_path):
                 logger.warning(f"Skipping hour f{h:02d}: file not found {ds_path}")
                 continue
-            args_list.append((h, ds_path, init_datetime, init_year, init_month, init_day, init_hh, output_dir, date_str, member_norm, config_dict))
+            args_list.append((h, ds_path, init_datetime, init_year, init_month, init_day, init_hh, output_dir, date_str, mem_str, config_dict))
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = [executor.submit(plot_lead_hour, *args) for args in args_list]
             for future in as_completed(futures):
@@ -551,6 +499,24 @@ def parse_arguments():
     parser.add_argument("--members", nargs='+', required=True, help="List/range of member IDs (e.g., 0-2 4 6-7 pmm)")
     parser.add_argument("--forecast_dir", default="./", help="Directory containing forecast files")
     parser.add_argument("--output_dir", default="./", help="Output directory for plots")
+    parser.add_argument(
+        "--lat-range",
+        dest="lat_range",
+        nargs=2,
+        type=float,
+        default=None,
+        metavar=("LAT_MIN", "LAT_MAX"),
+        help="Latitude zoom bounds for map extent (e.g., --lat-range 36 50)",
+    )
+    parser.add_argument(
+        "--lon-range",
+        dest="lon_range",
+        nargs=2,
+        type=float,
+        default=None,
+        metavar=("LON_MIN", "LON_MAX"),
+        help="Longitude zoom bounds for map extent (e.g., --lon-range 259 272)",
+    )
     parser.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                        help="Logging level")
     
@@ -564,6 +530,20 @@ def main():
     logger = setup_logging(args.log_level)
 
     try:
+        try:
+            lat_bounds = _normalize_range(args.lat_range, "lat_range")
+            lon_bounds = _normalize_range(args.lon_range, "lon_range")
+        except ValueError as e:
+            logger.error(str(e))
+            sys.exit(1)
+
+        zoom_extent = None
+        if lat_bounds is not None and lon_bounds is not None:
+            zoom_extent = (lon_bounds[0], lon_bounds[1], lat_bounds[0], lat_bounds[1])
+        elif lat_bounds is not None or lon_bounds is not None:
+            logger.error("Both --lat-range and --lon-range must be provided together for zooming")
+            sys.exit(1)
+
         def expand_member_arg(m):
             result = []
             for part in m.split(","):
@@ -585,6 +565,7 @@ def main():
                 datetime_str=args.inittime,
                 lead_hour=args.lead_hour,
                 member=member,
+                zoom_extent=zoom_extent,
                 forecast_dir=args.forecast_dir,
                 output_dir=args.output_dir,
             )

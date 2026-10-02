@@ -10,6 +10,7 @@ PACKAGEROOT=${5:-`pwd`}
 DATAROOT=${6:-`pwd`}
 RUNPLOT=${7:-"YES"}
 ENVMODE=${8:-``}
+RUNCLEANUP=${9:-"NO"}
 
 ACCNR=${ACCNR:-gsd-hpcs}
 FCST_ACCNR=${FCST_ACCNR:-$ACCNR}
@@ -23,13 +24,13 @@ fi
 # set wall clock time limits
 hr=$(echo "$INIT_TIME" | grep -oP '\d{2}$')
 if [[ "$hr" =~ ^(00|06|12|18)$ ]]; then
-    FCST_WALLTIME="02:15:00"
-    PMM_WALLTIME="02:30:00"
+    FCST_WALLTIME="02:20:00"
+    PMM_WALLTIME="02:35:00"
     GET_BCS_WALLTIME="00:30:00"
     MAKE_BCS_WALLTIME="01:00:00"
 else
     FCST_WALLTIME="01:00:00"
-    PMM_WALLTIME="01:20:00"
+    PMM_WALLTIME="01:15:00"
     GET_BCS_WALLTIME="00:15:00"
     MAKE_BCS_WALLTIME="00:30:00"
 fi
@@ -52,6 +53,7 @@ fi
 # set environment variables
 PMM_POLL_SECONDS="60"
 PMM_MIN_AGE_SECONDS="90"
+PMM_TIMEOUT_SECONDS="600"
 NETCDF2GRIB_SECTION3=
 WGRIB2="wgrib2"
 
@@ -94,12 +96,14 @@ echo "Submitted job: $jobid4"
 atparse < $PACKAGEROOT/jobs/job-fcst.sh > $DATAROOT/logs/job-fcst.sh
 jobid5=$(submit_with_check sbatch --dependency=afterok:$jobid3:$jobid4 --array=0-$((N_GPUS-1)) --wait-all-nodes=1 ${FCST_RESERVATION} --parsable $DATAROOT/logs/job-fcst.sh)
 echo "Submitted forecast job array: $jobid5"
+last_jobid=$jobid5
 
 # submit plots as job array
 if [ "$RUNPLOT" == "YES" ]; then
     atparse < $PACKAGEROOT/jobs/job-plot.sh > $DATAROOT/logs/job-plot.sh
     jobid6=$(submit_with_check sbatch --dependency=afterok:$jobid5 --array=0-$((N_GPUS-1)) --wait-all-nodes=1 --parsable $DATAROOT/logs/job-plot.sh)
     echo "Submitted plot job array: $jobid6"
+    last_jobid=$jobid6
 fi
 
 # ensemble PMM
@@ -107,10 +111,20 @@ if [ $N_ENSEMBLES -ge 2 ]; then
     atparse < $PACKAGEROOT/jobs/job-compute-pmm.sh > $DATAROOT/logs/job-compute-pmm.sh
     jobid7=$(submit_with_check sbatch --dependency=after:$jobid5 --parsable $DATAROOT/logs/job-compute-pmm.sh)
     echo "Submitted job: $jobid7"
+    last_jobid=$jobid7
 
     if [ "$RUNPLOT" == "YES" ]; then
         atparse < $PACKAGEROOT/jobs/job-plot.sh > $DATAROOT/logs/job-plot-pmm.sh
         jobid8=$(submit_with_check sbatch --dependency=afterok:$jobid7 --parsable $DATAROOT/logs/job-plot-pmm.sh)
         echo "Submitted job: $jobid8"
+        last_jobid=$jobid8
     fi
 fi
+
+# submit cleanup job to run after all jobs complete
+if [ "$RUNCLEANUP" == "YES" ]; then
+    atparse < $PACKAGEROOT/jobs/job-cleanup.sh > $DATAROOT/logs/job-cleanup.sh
+    jobid_cleanup=$(submit_with_check sbatch --dependency=afterany:$last_jobid --parsable $DATAROOT/logs/job-cleanup.sh)
+    echo "Submitted cleanup job: $jobid_cleanup (depends on job $last_jobid)"
+fi
+
