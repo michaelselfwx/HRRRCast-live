@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HRRRCast Ensemble Viewer</title>
+<style>
+:root{
+  --bg:#0f1216; --panel:#171b21; --panel2:#1e232b; --line:#2a313b; --text:#e6e9ee; --muted:#9aa4b2;
+  --accent:#4ea1ff; --accent-ink:#06121f; --warn:#f0b04c;
+}
+@media (prefers-color-scheme: light){
+  :root{ --bg:#f4f6f9; --panel:#ffffff; --panel2:#eef1f5; --line:#d6dbe3; --text:#16191d; --muted:#5b6573;
+         --accent:#1f6fd1; --accent-ink:#ffffff; --warn:#a96a00; }
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+  font:14px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--panel);border-bottom:1px solid var(--line);
+  padding:8px 12px;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+header h1{font-size:15px;margin:0 8px 0 0;font-weight:650;letter-spacing:.2px}
+.ctl{display:flex;align-items:center;gap:6px}
+.ctl label{color:var(--muted);font-size:12px}
+select,button{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);
+  border-radius:6px;padding:4px 8px}
+button{cursor:pointer}
+button:hover,select:hover{border-color:var(--accent)}
+button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.chips{display:flex;flex-wrap:wrap;gap:4px}
+.chip{padding:2px 8px;border-radius:999px;font-size:12px}
+.spacer{flex:1}
+#grid{display:grid;gap:8px;padding:10px 12px 96px}
+.cell{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;
+  display:flex;flex-direction:column;min-width:0}
+.cell .lbl{padding:4px 8px;font-size:12px;color:var(--muted);display:flex;justify-content:space-between;
+  border-bottom:1px solid var(--line);background:var(--panel2)}
+.cell .lbl b{color:var(--text);font-weight:600}
+.cell .img{position:relative;flex:1;display:flex;align-items:center;justify-content:center;cursor:zoom-in;
+  min-height:120px;background:var(--panel)}
+.cell img{max-width:100%;max-height:calc(100vh - 210px);display:block;object-fit:contain}
+.cell.focus .img{cursor:zoom-out}
+.cell.focus img{max-height:calc(100vh - 170px)}
+.missing{color:var(--muted);font-size:12px;padding:30px 10px;text-align:center}
+footer{position:fixed;left:0;right:0;bottom:0;z-index:5;background:var(--panel);border-top:1px solid var(--line);
+  padding:8px 12px;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
+#slider{flex:1;min-width:160px;accent-color:var(--accent)}
+#time{font-variant-numeric:tabular-nums;min-width:250px}
+#time b{font-weight:650}
+#load{font-size:12px;color:var(--muted);min-width:110px;text-align:right}
+.ticks{display:flex;justify-content:space-between;font-size:10px;color:var(--muted)}
+#empty{padding:60px 20px;text-align:center;color:var(--muted);max-width:640px;margin:auto}
+#empty code{background:var(--panel2);padding:2px 6px;border-radius:4px;color:var(--text)}
+.kbd{font-size:11px;color:var(--muted)}
+@media (max-width:700px){ #time{min-width:0} .kbd{display:none} }
+</style>
+</head>
+<body>
+<header>
+  <h1>HRRRCast</h1>
+  <div class="ctl"><label for="case">Init</label><select id="case"></select></div>
+  <div class="ctl"><label for="field">Product</label><select id="field"></select></div>
+  <div class="ctl" id="levelWrap"><label for="level">Level</label><select id="level"></select></div>
+  <div class="ctl"><label>Members</label><div class="chips" id="members"></div>
+    <button class="chip" id="allMem" title="Show all">all</button></div>
+  <div class="spacer"></div>
+  <div class="ctl"><label for="cols">Columns</label>
+    <select id="cols"><option value="auto">auto</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select></div>
+</header>
+
+<div id="grid"></div>
+<div id="empty" hidden></div>
+
+<footer>
+  <button id="prev" title="Previous (←)">◀</button>
+  <button id="play" title="Play / pause (space)">▶ Play</button>
+  <button id="next" title="Next (→)">▶</button>
+  <div class="ctl"><label for="speed">Speed</label>
+    <select id="speed"><option value="1200">slow</option><option value="600" selected>normal</option><option value="300">fast</option><option value="150">very fast</option></select></div>
+  <div style="flex:1;min-width:160px;display:flex;flex-direction:column">
+    <input type="range" id="slider" min="0" max="0" value="0">
+    <div class="ticks" id="ticks"></div>
+  </div>
+  <div id="time"></div>
+  <div id="load"></div>
+  <div class="kbd">← → step · space play · ↑ ↓ level · click map to enlarge</div>
+</footer>
+
+<script src="viewer_manifest.js"></script>
+<script>
+(function(){
+const M = window.HRRRCAST_MANIFEST;
+const $ = id => document.getElementById(id);
+const pad2 = n => String(n).padStart(2,"0");
+
+// Products shown first, in this order (anything else follows alphabetically)
+const FEATURED = ["summary","REFC","APCP","CAPE","CIN","T2M","D2M","WIND_10M","GUST","MSLMA",
+                  "HLCY_0_3km","HLCY_0_1km","PWAT","VIS","TCDC"];
+const NAMES = {
+  summary:"Summary panel", REFC:"Composite reflectivity", APCP:"Accumulated precip", CAPE:"CAPE", CIN:"CIN",
+  T2M:"2 m temperature", D2M:"2 m dewpoint", R2M:"2 m RH", POT2M:"2 m potential temp", SPFH2M:"2 m specific humidity",
+  WIND_10M:"10 m wind", UGRD10M:"10 m U wind", VGRD10M:"10 m V wind", UGRD80M:"80 m U wind", VGRD80M:"80 m V wind",
+  GUST:"Wind gust", GUST_CONV:"Convective gust", GUST_FACTOR:"Gust factor", WIND_MAX:"Max wind",
+  MSLMA:"MSLP (MAPS)", PRES:"Surface pressure", PWAT:"Precipitable water", VIS:"Visibility",
+  TCDC:"Total cloud", LCDC:"Low cloud", MCDC:"Mid cloud", HCDC:"High cloud", HGTCC:"Cloud ceiling",
+  HLCY_0_1km:"0–1 km SRH", HLCY_0_3km:"0–3 km SRH", RELV_max_0_1km:"Max rel. vorticity 0–1 km",
+  RELV_max_0_2km:"Max rel. vorticity 0–2 km", USTM_0_6km:"Storm motion U", VSTM_0_6km:"Storm motion V",
+  VUCSH_0_1km:"0–1 km shear U", VVCSH_0_1km:"0–1 km shear V", VUCSH_0_6km:"0–6 km shear U", VVCSH_0_6km:"0–6 km shear V",
+  HGT:"Geopotential height", TMP:"Temperature", UGRD:"U wind", VGRD:"V wind", VVEL:"Vertical velocity", SPFH:"Specific humidity",
+  CRAIN:"Categorical rain", CFRZR:"Categorical freezing rain", RAIN_MASK:"Rain mask", FRZR_MASK:"Freezing-rain mask",
+  HGT_0C:"0 °C height", RH_0C:"RH at 0 °C", SPFH_0C:"Spec. humidity at 0 °C", UGRD_0C:"U wind at 0 °C",
+  VGRD_0C:"V wind at 0 °C", WIND_0C:"Wind at 0 °C", DU_SFC_0C:"ΔU sfc–0 °C", DV_SFC_0C:"ΔV sfc–0 °C",
+  SHEAR_SFC_0C:"Shear sfc–0 °C", WARM_LAYER_DEPTH:"Warm layer depth", COLD_LAYER_DEPTH:"Cold layer depth"
+};
+const memLabel = m => m === "avg" ? "PMM / mean" : m === "spr" ? "Spread" : "Member " + parseInt(m.slice(1),10);
+
+if (!M || !M.cases || !Object.keys(M.cases).length){
+  document.querySelector("footer").hidden = true;
+  const e = $("empty"); e.hidden = false;
+  e.innerHTML = "No forecast plots indexed yet.<br><br>Run <code>python src/plot.py …</code>, then " +
+    "<code>python src/make_viewer_index.py</code> in this folder and reload.";
+  return;
+}
+
+// ---------- state ----------
+const S = {case:null, field:null, level:null, members:new Set(), idx:0, cols:"auto", focus:null, playing:false};
+let timer = null, leads = [], cache = {};
+
+function splitProduct(p){
+  let m = p.match(/^(.*)_(\d+)hPa$/); if (m) return [m[1], m[2]];
+  m = p.match(/^(.*)_surface$/); if (m) return [m[1], "surface"];
+  return [p, ""];
+}
+function caseObj(){ return M.cases[S.case]; }
+function fieldsOf(c){
+  const f = {};
+  for (const p of Object.keys(c.products)){ const [v,l] = splitProduct(p); (f[v] ||= []).push(l); }
+  for (const v in f) f[v].sort((a,b)=> (a==="surface"?-1:b==="surface"?1:(+b)-(+a)));  // surface, then 1000→200 hPa
+  return f;
+}
+function productKey(){ return S.level === "" ? S.field : S.level === "surface" ? S.field+"_surface" : `${S.field}_${S.level}hPa`; }
+function imgPath(mem, lead){
+  const c = caseObj(), d = c.memdirs[mem];
+  return `${S.case}/${d}_lead${pad2(lead)}h/${productKey()}_lead${pad2(lead)}h.png`;
+}
+function hasImg(mem, lead){
+  const p = caseObj().products[productKey()]; return !!(p && p[mem] && p[mem].includes(lead));
+}
+
+// ---------- controls ----------
+function fillCases(){
+  const sel = $("case"); sel.innerHTML = "";
+  const keys = Object.keys(M.cases).sort().reverse();
+  for (const k of keys){
+    const [d,h] = k.split("/");
+    sel.add(new Option(`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6)} ${h}Z`, k));
+  }
+}
+function fillFields(){
+  const f = fieldsOf(caseObj()), sel = $("field"); sel.innerHTML = "";
+  const names = Object.keys(f);
+  const feat = FEATURED.filter(n => f[n]);
+  const upper = names.filter(n => !feat.includes(n) && f[n].some(l => /^\d+$/.test(l))).sort();
+  const sfc = names.filter(n => !feat.includes(n) && !upper.includes(n)).sort();
+  const grp = (label, list) => {
+    if (!list.length) return; const g = document.createElement("optgroup"); g.label = label;
+    for (const n of list) g.appendChild(new Option(NAMES[n] ? `${NAMES[n]} (${n})` : n, n));
+    sel.appendChild(g);
+  };
+  grp("Featured", feat); grp("Surface & derived", sfc); grp("Pressure levels", upper);
+  if (!f[S.field]) S.field = feat[0] || names[0];
+  sel.value = S.field;
+}
+function fillLevels(){
+  const lv = fieldsOf(caseObj())[S.field] || [""], sel = $("level"); sel.innerHTML = "";
+  for (const l of lv) sel.add(new Option(l === "surface" ? "surface" : l === "" ? "—" : l + " hPa", l));
+  if (!lv.includes(S.level)) S.level = lv.includes("500") ? "500" : lv[0];
+  sel.value = S.level;
+  $("levelWrap").style.display = lv.length > 1 ? "" : "none";
+}
+function fillMembers(){
+  const c = caseObj(), box = $("members"); box.innerHTML = "";
+  const avail = c.members;
+  if (![...S.members].some(m => avail.includes(m))) S.members = new Set(avail);
+  for (const m of avail){
+    const b = document.createElement("button");
+    b.className = "chip" + (S.members.has(m) ? " on" : "");
+    b.textContent = m === "avg" ? "PMM" : m === "spr" ? "spread" : parseInt(m.slice(1),10);
+    b.title = memLabel(m);
+    b.onclick = () => { S.members.has(m) ? S.members.delete(m) : S.members.add(m);
+                        if (!S.members.size) S.members.add(m); S.focus = null; refresh(); };
+    box.appendChild(b);
+  }
+}
+function computeLeads(){
+  const p = caseObj().products[productKey()] || {};
+  const set = new Set();
+  for (const m of S.members) (p[m] || []).forEach(l => set.add(l));
+  const cur = leads[S.idx];
+  leads = [...set].sort((a,b)=>a-b);
+  if (!leads.length) leads = caseObj().leads.slice();
+  S.idx = Math.max(0, leads.indexOf(cur));
+  const sl = $("slider"); sl.max = Math.max(0, leads.length - 1); sl.value = S.idx;
+  const t = $("ticks"); t.innerHTML = "";
+  const step = Math.ceil(leads.length / 12);
+  leads.forEach((l,i) => { if (i % step === 0 || i === leads.length-1){ const s=document.createElement("span"); s.textContent="f"+pad2(l); t.appendChild(s);} });
+}
+
+// ---------- grid ----------
+let cells = {};
+function buildGrid(){
+  const g = $("grid"); g.innerHTML = ""; cells = {};
+  const mems = caseObj().members.filter(m => S.members.has(m));
+  const shown = S.focus && mems.includes(S.focus) ? [S.focus] : mems;
+  let cols = S.cols === "auto" ? Math.min(shown.length, shown.length <= 4 ? shown.length : shown.length <= 6 ? 3 : 4) : +S.cols;
+  if (S.focus) cols = 1;
+  g.style.gridTemplateColumns = `repeat(${Math.max(1,cols)}, minmax(0,1fr))`;
+  for (const m of shown){
+    const cell = document.createElement("div"); cell.className = "cell" + (S.focus ? " focus" : "");
+    cell.innerHTML = `<div class="lbl"><b>${memLabel(m)}</b><span></span></div><div class="img"><img alt=""><div class="missing" hidden>not available</div></div>`;
+    cell.querySelector(".img").onclick = () => { S.focus = S.focus ? null : m; buildGrid(); draw(); writeHash(); };
+    g.appendChild(cell); cells[m] = cell;
+  }
+}
+function draw(){
+  const lead = leads[S.idx];
+  for (const m in cells){
+    const cell = cells[m], img = cell.querySelector("img"), miss = cell.querySelector(".missing");
+    const ok = hasImg(m, lead);
+    cell.querySelector(".lbl span").textContent = "f" + pad2(lead);
+    if (ok){ const src = imgPath(m, lead); if (img.getAttribute("src") !== src) img.src = src; img.hidden = false; miss.hidden = true; }
+    else { img.hidden = true; miss.hidden = false; }
+  }
+  $("slider").value = S.idx;
+  const [d,h] = S.case.split("/");
+  const init = new Date(Date.UTC(+d.slice(0,4), +d.slice(4,6)-1, +d.slice(6), +h));
+  const valid = new Date(init.getTime() + lead*3600e3);
+  const fmt = t => `${t.getUTCFullYear()}-${pad2(t.getUTCMonth()+1)}-${pad2(t.getUTCDate())} ${pad2(t.getUTCHours())}Z`;
+  const wd = valid.toLocaleDateString("en-US",{weekday:"short", timeZone:"UTC"});
+  $("time").innerHTML = `<b>f${pad2(lead)}</b> · valid <b>${wd} ${fmt(valid)}</b> · init ${fmt(init)}`;
+}
+function preload(){
+  const want = [];
+  for (const m of S.members) for (const l of leads) if (hasImg(m,l)) want.push(imgPath(m,l));
+  let done = 0; const total = want.length, el = $("load");
+  const tick = () => { el.textContent = done >= total ? "" : `loading ${done}/${total}`; };
+  tick();
+  for (const src of want){
+    if (cache[src] && cache[src].complete){ done++; tick(); continue; }
+    const im = cache[src] || (cache[src] = new Image());
+    const fin = () => { done++; tick(); };
+    im.addEventListener("load", fin, {once:true}); im.addEventListener("error", fin, {once:true});
+    if (!im.src) im.src = src;
+  }
+}
+
+// ---------- playback ----------
+function step(d){ if (!leads.length) return; S.idx = (S.idx + d + leads.length) % leads.length; draw(); writeHash(); }
+function play(on){
+  S.playing = on; $("play").textContent = on ? "❚❚ Pause" : "▶ Play"; $("play").classList.toggle("on", on);
+  clearTimeout(timer);
+  if (!on) return;
+  const loop = () => {
+    step(1);
+    const ms = +$("speed").value * (S.idx === leads.length - 1 ? 2.5 : 1);   // dwell on last frame
+    timer = setTimeout(loop, ms);
+  };
+  timer = setTimeout(loop, +$("speed").value);
+}
+
+// ---------- URL state ----------
+function writeHash(){
+  const q = new URLSearchParams({c:S.case, p:S.field, l:S.level, m:[...S.members].join(","), f:leads[S.idx] ?? "", cols:S.cols});
+  if (S.focus) q.set("z", S.focus);
+  history.replaceState(null, "", "#" + q.toString());
+}
+function readHash(){
+  const q = new URLSearchParams(location.hash.slice(1));
+  if (q.get("c") && M.cases[q.get("c")]) S.case = q.get("c");
+  if (q.has("p")) S.field = q.get("p");
+  if (q.has("l")) S.level = q.get("l");
+  if (q.get("m")) S.members = new Set(q.get("m").split(","));
+  if (q.get("cols")) S.cols = q.get("cols");
+  if (q.get("z")) S.focus = q.get("z");
+  return q.has("f") ? +q.get("f") : null;
+}
+
+// ---------- wiring ----------
+function refresh(rebuildFields){
+  if (rebuildFields){ fillFields(); }
+  fillLevels(); fillMembers(); computeLeads(); buildGrid(); draw(); preload(); writeHash();
+}
+$("case").onchange = e => { S.case = e.target.value; S.focus = null; refresh(true); };
+$("field").onchange = e => { S.field = e.target.value; refresh(); };
+$("level").onchange = e => { S.level = e.target.value; refresh(); };
+$("cols").onchange = e => { S.cols = e.target.value; buildGrid(); draw(); writeHash(); };
+$("allMem").onclick = () => { S.members = new Set(caseObj().members); S.focus = null; refresh(); };
+$("slider").oninput = e => { S.idx = +e.target.value; draw(); writeHash(); };
+$("prev").onclick = () => { play(false); step(-1); };
+$("next").onclick = () => { play(false); step(1); };
+$("play").onclick = () => play(!S.playing);
+$("speed").onchange = () => { if (S.playing) play(true); };
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "SELECT") return;
+  if (e.key === "ArrowRight"){ play(false); step(1); e.preventDefault(); }
+  else if (e.key === "ArrowLeft"){ play(false); step(-1); e.preventDefault(); }
+  else if (e.key === " "){ play(!S.playing); e.preventDefault(); }
+  else if (e.key === "Home"){ S.idx = 0; draw(); }
+  else if (e.key === "End"){ S.idx = leads.length - 1; draw(); }
+  else if (e.key === "Escape" && S.focus){ S.focus = null; buildGrid(); draw(); writeHash(); }
+  else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && $("levelWrap").style.display !== "none"){
+    const sel = $("level"), i = sel.selectedIndex + (e.key === "ArrowUp" ? 1 : -1);   // up = higher in atmosphere
+    if (i >= 0 && i < sel.options.length){ S.level = sel.options[i].value; refresh(); }
+    e.preventDefault();
+  }
+});
+
+fillCases();
+const startLead = readHash();
+S.case = S.case || $("case").options[0].value;
+$("case").value = S.case; $("cols").value = S.cols;
+fillFields(); fillLevels(); fillMembers(); computeLeads();
+if (startLead !== null && leads.includes(startLead)) S.idx = leads.indexOf(startLead);
+buildGrid(); draw(); preload(); writeHash();
+})();
+</script>
+</body>
+</html>
