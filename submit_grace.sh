@@ -96,13 +96,14 @@ atparse < $JOBDIR/job-make-bcs.sh > logs/job-make-bcs.sh
 jobid4=$(sb --dependency=afterok:$jobid2 logs/job-make-bcs.sh) || exit 1; echo "Submitted make_bcs: $jobid4"
 
 atparse < $JOBDIR/job-fcst.sh > logs/job-fcst.sh
-jobid5=$(sb --dependency=afterok:$jobid3:$jobid4 --array=0-$((N_GPUS-1) || exit 1) logs/job-fcst.sh)
+ARRAY_SPEC="0-$((N_GPUS-1))"
+jobid5=$(sb --dependency=afterok:$jobid3:$jobid4 --array=$ARRAY_SPEC logs/job-fcst.sh) || exit 1
 echo "Submitted forecast array: $jobid5"
 last_jobid=$jobid5
 
 if [ "$RUNPLOT" == "YES" ]; then
     atparse < $JOBDIR/job-plot.sh > logs/job-plot.sh
-    jobid6=$(sb --dependency=afterok:$jobid5 --array=0-$((N_GPUS-1) || exit 1) logs/job-plot.sh)
+    jobid6=$(sb --dependency=afterok:$jobid5 --array=$ARRAY_SPEC logs/job-plot.sh) || exit 1
     echo "Submitted plot array: $jobid6"
     last_jobid=$jobid6
 fi
