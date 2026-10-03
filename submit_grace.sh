@@ -28,7 +28,7 @@ RUNCLEANUP=${9:-"NO"}
 
 GRACE_GPU=${GRACE_GPU:-a100}
 case "$GRACE_GPU" in a100|a40) ;; *) echo "GRACE_GPU must be a100 or a40" >&2; exit 1;; esac
-FCST_EXTRA=${FCST_EXTRA:-}
+FCST_EXTRA=${FCST_EXTRA:---bbox 25.8,36.5,-106.7,-93.5}
 GET_BCS_EXTRA=${GET_BCS_EXTRA:-}
 
 SBATCH_ACCOUNT_OPT=""
