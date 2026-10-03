@@ -413,12 +413,12 @@ def compute_ensemble_pmm(datetime_str: str,
             out_nc = os.path.join(output_date_dir, f"hrrrcast_avg_f{h:02d}.nc")
             # Get CF-compliant encoding
             encoding = get_cf_encoding(processed_ds, init_datetime)
-            processed_ds.to_netcdf(out_nc, encoding=encoding)
+            processed_ds.to_netcdf(out_nc, encoding=encoding, engine=utils.netcdf_engine())
             logger.info(f"Wrote NetCDF : {out_nc}")
 
             out_nc_spread = os.path.join(output_date_dir, f"hrrrcast_spr_f{h:02d}.nc")
             encoding = get_cf_encoding(spread_ds, init_datetime)
-            spread_ds.to_netcdf(out_nc_spread, encoding=encoding)
+            spread_ds.to_netcdf(out_nc_spread, encoding=encoding, engine=utils.netcdf_engine())
             logger.info(f"Wrote NetCDF : {out_nc_spread}")
 
             # Save per-hour GRIB2

@@ -669,7 +669,7 @@ class WeatherForecaster:
 
         # Get CF-compliant encoding
         encoding = get_cf_encoding(ds_hour, init_datetime)
-        ds_hour.to_netcdf(nc_path, encoding=encoding)
+        ds_hour.to_netcdf(nc_path, encoding=encoding, engine=utils.netcdf_engine())
 
         write_time = time.time() - t0
         logger.info(f"Wrote NetCDF in {write_time:.3f}s : {nc_path}")

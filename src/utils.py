@@ -92,3 +92,18 @@ def download_file_with_retry(url: str, output_path: Union[str, Path], max_retrie
             logger.error(f"Unexpected error downloading {url}: {e}")
             return False
     return False
+
+
+def netcdf_engine():
+    """Engine for xarray.to_netcdf.
+
+    The netCDF4 engine (netCDF-C) probes the not-yet-existing output path with HDF5's
+    H5Fis_accessible, and recent HDF5 builds print a long, harmless "HDF5-DIAG ... No such
+    file or directory" trace for every file. h5netcdf writes the same NetCDF4/HDF5 files via
+    h5py without that noise, so prefer it when installed.
+    """
+    try:
+        import h5netcdf  # noqa: F401
+        return "h5netcdf"
+    except ImportError:
+        return None
