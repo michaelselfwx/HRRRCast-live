@@ -291,7 +291,12 @@ class ForecastModel:
             logger.warning("No GPUs used, running on CPU only.")
 
         # set JIT compilation of graphs
-        tf.config.optimizer.set_jit(True)
+        # XLA fuses big chunks of the network into single kernels: faster, but each fused
+        # cluster needs large scratch buffers (>16 GB at full CONUS), which does not fit next to
+        # the live activations on a 40/48 GB GPU. HRRRCAST_XLA=0 turns it off.
+        use_xla = os.environ.get("HRRRCAST_XLA", "1") not in ("0", "false", "False", "no")
+        tf.config.optimizer.set_jit(use_xla)
+        logger.info(f"XLA JIT {'on' if use_xla else 'off'} (HRRRCAST_XLA)")
     
     def _load_model(self):
         """Load the TensorFlow model."""
