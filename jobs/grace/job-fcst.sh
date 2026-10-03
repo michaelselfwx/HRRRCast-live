@@ -23,10 +23,6 @@ export NETCDF2GRIB_SECTION3=@[NETCDF2GRIB_SECTION3]
 export WGRIB2=@[WGRIB2]
 export TF_CPP_MIN_LOG_LEVEL=1
 export TF_GPU_ALLOCATOR=cuda_malloc_async
-# Full CONUS on a 40 GB A100 / 48 GB A40: XLA's fused-kernel scratch space does not fit,
-# so run without XLA and cap cuDNN's per-conv workspace. Override with HRRRCAST_XLA=1.
-export HRRRCAST_XLA=${HRRRCAST_XLA:-0}
-export TF_CUDNN_WORKSPACE_LIMIT_IN_MB=${TF_CUDNN_WORKSPACE_LIMIT_IN_MB:-2048}
 
 source ${PACKAGEROOT}/etc/env_grace.sh
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
