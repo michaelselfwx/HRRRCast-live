@@ -1,10 +1,11 @@
-# HRRRCast environment for TAMU HPRC Grace (A100/A40 GPUs).
+# HRRRCast environment for TAMU HPRC Grace (A100/A40 GPUs) -- pip-first, fast to build.
 #
-# TensorFlow + Keras come from pip ONLY, pinned to the versions the model was saved with
-# (Keras 2 format, TF 2.15). conda must never install its own tensorflow/keras here: on a
-# login node conda-forge picks the CPU build, and mixing conda + pip TF breaks imports.
+# conda installs only what has no reliable pip wheel (ESMF for xesmf, NCEPLIBS-g2c for
+# grib2io) plus python and a modern C++ runtime. Everything else, including TensorFlow and
+# Keras, comes from pip. TF/Keras are pinned to the versions the model was saved with
+# (TF 2.15 + Keras 2 format); never let conda install its own tensorflow/keras here.
 #
-# Build (on a login node is fine):
+# Build (login node is fine; ~5-10 min instead of a long conda solve):
 #   conda env create -f etc/environment_grace.yaml
 #   conda activate hrrrcast
 #   printf "tensorflow <0\nkeras <0\n" >> $CONDA_PREFIX/conda-meta/pinned
@@ -12,39 +13,41 @@
 #   python -c "import tensorflow as tf, keras; print(tf.__version__, keras.__version__, tf.config.list_physical_devices('GPU'))"
 #   -> 2.15.1 2.15.0 [PhysicalDevice(name='/physical_device:GPU:0', device_type='GPU')]
 #
-# Put wgrib2 in its own env (conda create -n wgrib2env -c conda-forge wgrib2) and point
-# WGRIB2 at it, so installing it can't change the libraries TensorFlow uses here.
+# Keep wgrib2 in its own env (conda create -n wgrib2env -c conda-forge wgrib2) and point
+# WGRIB2 at it, so it can't change the libraries TensorFlow uses here.
 name: hrrrcast
 channels:
   - conda-forge
 dependencies:
+  # --- conda: only the compiled bits pip can't provide well ---
   - python=3.10
-  - numpy<2            # TF 2.15 is built against NumPy 1.x
-  - pandas
-  - xarray
-  - dask
-  - bottleneck
-  - netcdf4
-  - h5netcdf
-  - h5py
-  - zarr
-  - xesmf
-  - pygrib
-  - eccodes
-  - grib2io
-  - cf-units
-  - scikit-image
-  - matplotlib
-  - cartopy
-  - seaborn
-  - joblib
-  - fire
-  - tqdm
-  - requests
-  - python-dateutil
-  - libstdcxx-ng>=12   # newer C++ runtime than Grace's /lib64 (GLIBCXX_3.4.29)
-  - git-lfs
+  - numpy<2              # TF 2.15 needs NumPy 1.x; pinned here so conda and pip agree
+  - esmpy                # ESMF regridding engine behind xesmf (no usable pip wheel)
+  - esmf=*=nompi*        # serial ESMF: much smaller/faster than the MPI builds
+  - grib2io              # GRIB2 writer; brings NCEPLIBS-g2c
+  - libstdcxx-ng>=12     # newer C++ runtime than Grace's /lib64 (GLIBCXX_3.4.29)
   - pip
+  # --- pip: everything else ---
   - pip:
       - tensorflow[and-cuda]==2.15.1
       - keras==2.15.0
+      - xesmf
+      - xarray
+      - pandas
+      - dask
+      - bottleneck
+      - netCDF4
+      - h5netcdf
+      - h5py
+      - zarr
+      - pygrib            # manylinux wheel bundles ecCodes
+      - cartopy           # manylinux wheel bundles GEOS/PROJ
+      - matplotlib
+      - seaborn
+      - scikit-image
+      - scipy
+      - joblib
+      - fire
+      - tqdm
+      - requests
+      - python-dateutil
