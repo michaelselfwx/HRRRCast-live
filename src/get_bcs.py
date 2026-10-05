@@ -343,14 +343,6 @@ def main():
     parser = argparse.ArgumentParser(
         description="Download GFS lateral boundary conditions",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python get_lbcs.py 2024-01-15T12 0    # Single file
-  python get_lbcs.py 2024-01-15T12 24   # 24-hour boundary conditions
-  python get_lbcs.py 2024-01-15T12 48 --base_dir /data/weather
-  python get_lbcs.py 2024-01-15T12 36 --log_level DEBUG
-  python get_lbcs.py 2019-05-20T21 6 --source thredds   # pre-2021: NCEI 0.5 deg, 3-hourly
-        """
     )
     
     parser.add_argument('inittime',
