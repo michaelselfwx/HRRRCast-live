@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import fnmatch
 import logging
 import os
 import sys
@@ -36,6 +37,37 @@ except ImportError:
 import utils
 from utils import setup_logging
 from cf_attributes import VARIABLE_METADATA
+
+
+def parse_product_patterns(values) -> Optional[List[str]]:
+    """Turn --products / HRRRCAST_PLOT_PRODUCTS into a list of patterns (None = everything).
+
+    Accepts space- or comma-separated entries, e.g. "REFC APCP T2M HGT_500hPa summary".
+    """
+    if not values:
+        return None
+    if isinstance(values, str):
+        values = [values]
+    pats = [p.strip() for v in values for p in v.replace(",", " ").split() if p.strip()]
+    return pats or None
+
+
+def product_wanted(product: str, patterns: Optional[List[str]]) -> bool:
+    """True if a product (e.g. "REFC_surface", "HGT_500hPa", "summary") should be plotted.
+
+    A pattern matches the full product name or just the variable name, and may use shell
+    wildcards: "REFC" -> REFC_surface; "HGT" -> HGT at every level; "HGT_500hPa" -> one
+    level; "*_850hPa" -> every variable at 850 hPa; "HLCY_*" -> both SRH layers.
+    """
+    if not patterns:
+        return True
+    var = product
+    for suffix in ("_surface",):
+        if var.endswith(suffix):
+            var = var[: -len(suffix)]
+    if var.endswith("hPa") and "_" in var:
+        var = var.rsplit("_", 1)[0]
+    return any(fnmatch.fnmatchcase(product, p) or fnmatch.fnmatchcase(var, p) for p in patterns)
 
 logger = None
 
@@ -81,6 +113,7 @@ class ForecastPlotterConfig:
         self.dpi = 300
         self.cmap_default = 'viridis'
         self.zoom_extent = None
+        self.products = None   # list of product patterns; None = plot everything
 
 
 class ForecastPlotter:
@@ -266,6 +299,8 @@ class ForecastPlotter:
                 continue
 
             for level_idx, level in enumerate(levels_in_ds):
+                if not product_wanted(f"{var_name}_{level}hPa", self.config.products):
+                    continue
                 try:
                     # Extract data for this variable and level
                     # Use lead_time dimension and select first time step (time=0)
@@ -302,7 +337,9 @@ class ForecastPlotter:
         
         # Plot each surface variable
         for var_name in self.config.sfc_vars:
-            
+            if not product_wanted(f"{var_name}_surface", self.config.products):
+                continue
+
             if var_name not in ds.variables:
                 logger.warning(f"Variable {var_name} not found in dataset")
                 continue
@@ -434,7 +471,8 @@ def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, i
         utils.make_directory(output_subdir)
         plotter.plot_pressure_level_variables(ds, h, output_subdir, timestamp_str)
         plotter.plot_surface_variables(ds, h, output_subdir, timestamp_str)
-        plotter.create_summary_plot(ds, h, output_subdir, timestamp_str)
+        if product_wanted("summary", config.products):
+            plotter.create_summary_plot(ds, h, output_subdir, timestamp_str)
         logging.info(f"Plots for lead hour {h} saved to: {output_subdir}")
     finally:
         ds.close()
@@ -442,7 +480,8 @@ def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, i
 def plot_forecast_data(datetime_str: str,
                       lead_hour: str, member: str,
                       zoom_extent: Optional[tuple] = None,
-                      forecast_dir: str = "./", output_dir: str = "./"):
+                      forecast_dir: str = "./", output_dir: str = "./",
+                      products: Optional[List[str]] = None):
     """Main plotting function. Plots all hours from 1 to lead_hour (inclusive) in parallel."""
     try:
         # Validate inputs
@@ -459,6 +498,7 @@ def plot_forecast_data(datetime_str: str,
         # Initialize plotter config (for passing to subprocesses)
         config = ForecastPlotterConfig()
         config.zoom_extent = zoom_extent
+        config.products = products
         config_dict = config.__dict__
         
         n_workers = lead_hour_int
@@ -517,6 +557,9 @@ def parse_arguments():
         metavar=("LON_MIN", "LON_MAX"),
         help="Longitude zoom bounds for map extent (e.g., --lon-range 259 272)",
     )
+    parser.add_argument("--products", nargs="+", default=None,
+                        help="Only plot these products (names or wildcards), e.g. REFC APCP T2M HGT_500hPa summary. "
+                             "Default: $HRRRCAST_PLOT_PRODUCTS if set, else everything")
     parser.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                        help="Logging level")
     
@@ -560,6 +603,9 @@ def main():
             members.extend(expand_member_arg(m))
         members = sorted(set(members), key=lambda x: (not x.isdigit(), x))
 
+        products = parse_product_patterns(args.products or os.environ.get("HRRRCAST_PLOT_PRODUCTS"))
+        logger.info(f"Products: {' '.join(products) if products else 'all'}")
+
         for member in members:
             plot_forecast_data(
                 datetime_str=args.inittime,
@@ -568,6 +614,7 @@ def main():
                 zoom_extent=zoom_extent,
                 forecast_dir=args.forecast_dir,
                 output_dir=args.output_dir,
+                products=products,
             )
     except Exception as e:
         logger.error(f"Application failed: {e}")

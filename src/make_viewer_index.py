@@ -13,6 +13,8 @@ Then open viewer.html (double-click works) or run `python -m http.server` in bas
 """
 
 import argparse
+import fnmatch
+import os
 import json
 import re
 import shutil
@@ -25,6 +27,16 @@ HOUR_RE = re.compile(r"^\d{2}$")
 # member folder: m00 / memm00 (older plot.py) / mem0 / avg / memavg / spr ...  + _leadNNh
 MEMDIR_RE = re.compile(r"^(?:mem)?(m?\d+|avg|spr|pmm)_lead(\d+)h$")  # m00, older memm00 / mem0, avg, spr
 PNG_RE = re.compile(r"^(.+)_lead(\d+)h\.png$")
+
+
+def product_wanted(product: str, patterns) -> bool:
+    """Same matching as plot.py --products: full name or variable name, shell wildcards."""
+    if not patterns:
+        return True
+    var = product[:-len("_surface")] if product.endswith("_surface") else product
+    if var.endswith("hPa") and "_" in var:
+        var = var.rsplit("_", 1)[0]
+    return any(fnmatch.fnmatchcase(product, p) or fnmatch.fnmatchcase(var, p) for p in patterns)
 
 
 def member_id(raw: str) -> str:
@@ -41,7 +53,7 @@ def member_sort_key(m: str):
     return (1, {"avg": 0, "spr": 1}.get(m, 9))
 
 
-def scan(base: Path) -> dict:
+def scan(base: Path, products=None) -> dict:
     cases = {}
     for day in sorted(p for p in base.iterdir() if p.is_dir() and CASE_RE.match(p.name)):
         for hh in sorted(p for p in day.iterdir() if p.is_dir() and HOUR_RE.match(p.name)):
@@ -58,7 +70,7 @@ def scan(base: Path) -> dict:
                 prods = found.setdefault((mem, prefix), {})
                 for f in d.iterdir():
                     pm = PNG_RE.match(f.name)
-                    if pm:
+                    if pm and product_wanted(pm.group(1), products):
                         prods.setdefault(pm.group(1), set()).add(lead)
             members, products, leads = {}, {}, set()
             best = {}
@@ -88,10 +100,15 @@ def scan(base: Path) -> dict:
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base_dir", default="./", help="Directory holding YYYYMMDD/HH plot folders (plot.py --output_dir)")
+    ap.add_argument("--products", nargs="+", default=None,
+                    help="Only list these products in the viewer (names or wildcards, same as plot.py). "
+                         "Default: $HRRRCAST_PLOT_PRODUCTS if set, else everything found")
     args = ap.parse_args()
     base = Path(args.base_dir).resolve()
+    raw = args.products or os.environ.get("HRRRCAST_PLOT_PRODUCTS", "").split()
+    products = [p for v in raw for p in v.replace(",", " ").split()] or None
 
-    cases = scan(base)
+    cases = scan(base, products)
     if not cases:
         print(f"No plot folders found under {base} (expected YYYYMMDD/HH/<member>_leadNNh/*.png)")
         sys.exit(1)
