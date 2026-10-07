@@ -72,7 +72,7 @@ def scan(base: Path, products=None) -> dict:
                     pm = PNG_RE.match(f.name)
                     if pm and product_wanted(pm.group(1), products):
                         prods.setdefault(pm.group(1), set()).add(lead)
-            members, products, leads = {}, {}, set()
+            members, case_prods, leads = {}, {}, set()
             best = {}
             for (mem, prefix), prods in found.items():
                 n = sum(len(v) for v in prods.values())
@@ -81,9 +81,9 @@ def scan(base: Path, products=None) -> dict:
             for mem, (_, prefix) in best.items():
                 members[mem] = prefix
                 for prod, ls in found[(mem, prefix)].items():
-                    products.setdefault(prod, {})[mem] = ls
+                    case_prods.setdefault(prod, {})[mem] = ls
                     leads |= ls
-            if not products:
+            if not case_prods:
                 continue
             cases[case_key] = {
                 "members": sorted(members, key=member_sort_key),
@@ -91,7 +91,7 @@ def scan(base: Path, products=None) -> dict:
                 "leads": sorted(leads),
                 "products": {
                     p: {mem: sorted(ls) for mem, ls in sorted(v.items(), key=lambda kv: member_sort_key(kv[0]))}
-                    for p, v in sorted(products.items())
+                    for p, v in sorted(case_prods.items())
                 },
             }
     return cases
