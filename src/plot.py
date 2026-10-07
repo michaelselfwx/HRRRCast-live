@@ -52,6 +52,23 @@ def parse_product_patterns(values) -> Optional[List[str]]:
     return pats or None
 
 
+def ensure_county_shapes() -> bool:
+    """Download/locate the Natural Earth 10m US county shapefile (cached by cartopy after the
+    first run). Returns False, with a warning, if it can't be fetched (e.g. no internet)."""
+    if not CARTOPY_AVAILABLE:
+        return False
+    try:
+        from cartopy.io import shapereader
+        shapereader.natural_earth(resolution="10m", category="cultural", name="admin_2_counties")
+        return True
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            f"County borders unavailable ({e}); plotting without them. "
+            "On HPRC compute nodes load the WebProxy module, or run once on a login node to cache them."
+        )
+        return False
+
+
 def product_wanted(product: str, patterns: Optional[List[str]]) -> bool:
     """True if a product (e.g. "REFC_surface", "HGT_500hPa", "summary") should be plotted.
 
@@ -114,6 +131,9 @@ class ForecastPlotterConfig:
         self.cmap_default = 'viridis'
         self.zoom_extent = None
         self.products = None   # list of product patterns; None = plot everything
+        # US county borders (Natural Earth 10m admin_2_counties; downloaded once by cartopy).
+        # Turn off with --no-counties or HRRRCAST_PLOT_COUNTIES=0.
+        self.counties = os.environ.get("HRRRCAST_PLOT_COUNTIES", "1") not in ("0", "false", "no")
 
 
 class ForecastPlotter:
@@ -124,6 +144,28 @@ class ForecastPlotter:
         self.use_cartopy = CARTOPY_AVAILABLE
         if not self.use_cartopy:
             logger.warning("Cartopy not available, using simple plotting")
+
+    _counties_feature = None   # built once per process, shared by every plot
+
+    def _add_map_features(self, ax) -> None:
+        """Coastlines, country and state borders, plus (optionally) county borders."""
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5, zorder=3)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.5, zorder=3)
+        ax.add_feature(cfeature.STATES, linewidth=0.3, zorder=3)
+        if not getattr(self.config, "counties", False):
+            return
+        if ForecastPlotter._counties_feature is None:
+            # cartopy only fetches the shapefile when the figure is drawn, so a failed download
+            # would break savefig; fetch it here first and skip counties if that fails.
+            if not ensure_county_shapes():
+                self.config.counties = False
+                return
+            ForecastPlotter._counties_feature = cfeature.NaturalEarthFeature(
+                category="cultural", name="admin_2_counties", scale="10m",
+                facecolor="none", edgecolor="0.45",
+            )
+        # thin grey lines under the state borders but above the filled field
+        ax.add_feature(ForecastPlotter._counties_feature, linewidth=0.12, zorder=2.5)
     
     def load_forecast_data(self, forecast_file: str) -> xr.Dataset:
         """Load forecast data from NetCDF file."""
@@ -241,9 +283,7 @@ class ForecastPlotter:
         if self.use_cartopy:
             fig = plt.figure(figsize=self.config.figure_size)
             ax = plt.axes(projection=ccrs.PlateCarree())
-            ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
-            ax.add_feature(cfeature.BORDERS, linewidth=0.5)
-            ax.add_feature(cfeature.STATES, linewidth=0.3)
+            self._add_map_features(ax)
             if self.config.zoom_extent is not None:
                 ax.set_extent(self.config.zoom_extent, crs=ccrs.PlateCarree())
 
@@ -386,9 +426,7 @@ class ForecastPlotter:
                 axes = []
                 for i in range(4):
                     ax = plt.subplot(2, 2, i+1, projection=ccrs.PlateCarree())
-                    ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
-                    ax.add_feature(cfeature.BORDERS, linewidth=0.5)
-                    ax.add_feature(cfeature.STATES, linewidth=0.3)
+                    self._add_map_features(ax)
                     if self.config.zoom_extent is not None:
                         ax.set_extent(self.config.zoom_extent, crs=ccrs.PlateCarree())
                     axes.append(ax)
@@ -481,7 +519,8 @@ def plot_forecast_data(datetime_str: str,
                       lead_hour: str, member: str,
                       zoom_extent: Optional[tuple] = None,
                       forecast_dir: str = "./", output_dir: str = "./",
-                      products: Optional[List[str]] = None):
+                      products: Optional[List[str]] = None,
+                      counties: Optional[bool] = None):
     """Main plotting function. Plots all hours from 1 to lead_hour (inclusive) in parallel."""
     try:
         # Validate inputs
@@ -490,7 +529,8 @@ def plot_forecast_data(datetime_str: str,
         lead_hour_int = int(lead_hour)
         
         # Normalize 'pmm' alias to 'avg'
-
+        if member == "pmm":
+            member = "avg"
         mem_str = str(member)
         if mem_str not in {"avg", "spr"}:
             mem_str = f"m{int(member):02d}"
@@ -499,6 +539,12 @@ def plot_forecast_data(datetime_str: str,
         config = ForecastPlotterConfig()
         config.zoom_extent = zoom_extent
         config.products = products
+        if counties is not None:
+            config.counties = counties
+        if config.counties:
+            # fetch the county shapefile once here, before the worker processes start,
+            # so parallel workers don't all try to download it at the same time
+            config.counties = ensure_county_shapes()
         config_dict = config.__dict__
         
         n_workers = lead_hour_int
@@ -557,6 +603,8 @@ def parse_arguments():
         metavar=("LON_MIN", "LON_MAX"),
         help="Longitude zoom bounds for map extent (e.g., --lon-range 259 272)",
     )
+    parser.add_argument("--no-counties", dest="counties", action="store_false", default=None,
+                        help="Do not draw county borders (default: drawn; or set HRRRCAST_PLOT_COUNTIES=0)")
     parser.add_argument("--products", nargs="+", default=None,
                         help="Only plot these products (names or wildcards), e.g. REFC APCP T2M HGT_500hPa summary. "
                              "Default: $HRRRCAST_PLOT_PRODUCTS if set, else everything")
@@ -615,6 +663,7 @@ def main():
                 forecast_dir=args.forecast_dir,
                 output_dir=args.output_dir,
                 products=products,
+                counties=args.counties,
             )
     except Exception as e:
         logger.error(f"Application failed: {e}")
