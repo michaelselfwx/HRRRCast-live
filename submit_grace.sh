@@ -22,7 +22,7 @@ LEAD_HOUR=${2:-18}
 N_ENSEMBLES=${3:-1}
 N_GPUS=${4:-1}
 PACKAGEROOT=${5:-`pwd`}
-DATAROOT=${6:-`pwd`}
+DATAROOT=${6:-$SCRATCH/hrrrcast-data}
 RUNPLOT=${7:-"YES"}
 RUNCLEANUP=${9:-"NO"}
 
@@ -34,9 +34,9 @@ GET_BCS_EXTRA=${GET_BCS_EXTRA:-}
 SBATCH_ACCOUNT_OPT=""
 if [ -n "${ACCNR:-}" ]; then SBATCH_ACCOUNT_OPT="--account=${ACCNR}"; fi
 
-# Grace nodes have 48 cores: make_bcs/plot use one process per lead hour, capped at 48
+# Grace nodes have 48 cores: make_bcs/plot use two process per lead hour, capped at 48
 CPU_TASKS=$(( LEAD_HOUR < 48 ? LEAD_HOUR : 48 ))
-(( CPU_TASKS < 1 )) && CPU_TASKS=1
+(( CPU_TASKS < 1 )) && CPU_TASKS=2
 
 # wall clock limits (A100/A40 are slower than the H100s the defaults were tuned for)
 hr=$(echo "$INIT_TIME" | grep -oP '\d{2}$')

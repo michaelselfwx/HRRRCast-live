@@ -1,7 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=fcst
 #SBATCH --output=logs/fcst_%A_%a.out
-#SBATCH --partition=gpu
+##SBATCH --partition=gpu-a40
+##SBATCH --gpus-per-node=1
 #SBATCH --gres=gpu:@[GRACE_GPU]:1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
