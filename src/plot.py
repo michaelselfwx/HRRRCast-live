@@ -52,6 +52,16 @@ def parse_product_patterns(values) -> Optional[List[str]]:
     return pats or None
 
 
+# Derived precipitation products written by derived_precip.py
+# (hrrrcast_<mem>_precip_fHH.nc for members/avg, hrrrcast_lpmm_fHH.nc for the local PMM)
+DERIVED_PRECIP_VARS = ["APCP", "APCP_TOT", "APCP_6H", "APCP_12H"]
+DERIVED_META = {
+    "APCP_TOT": {"long_name": "Total precipitation since init", "units": "mm"},
+    "APCP_6H":  {"long_name": "6-h precipitation",              "units": "mm"},
+    "APCP_12H": {"long_name": "12-h precipitation",             "units": "mm"},
+}
+
+
 def ensure_county_shapes() -> bool:
     """Download/locate the Natural Earth 10m US county shapefile (cached by cartopy after the
     first run). Returns False, with a warning, if it can't be fetched (e.g. no internet)."""
@@ -200,6 +210,38 @@ class ForecastPlotter:
         return cmap, norm, vmin, vmax
 
     @staticmethod
+    def get_apcp_accum_cmap() -> tuple:
+        """Colormap + norm for multi-hour precipitation totals (mm), extends to 250 mm."""
+        levels = [0.25, 1, 2.5, 5, 10, 15, 20, 25, 35, 50, 75, 100, 125, 150, 200, 250]
+        colors = [
+            "#E1F5FE", "#B0E2FF", "#7EC0EE", "#00FA9A", "#32CD32", "#228B22", "#FFFF00", "#FFD700",
+            "#FFA500", "#FF4500", "#FF0000", "#B22222", "#8B0000", "#9400D3", "#4B0082",
+        ]
+        cmap = mcolors.ListedColormap(colors)
+        cmap.set_under("white", alpha=0)
+        norm = mcolors.BoundaryNorm(levels, cmap.N)
+        return cmap, norm, min(levels), max(levels)
+
+    def plot_derived_precip(self, ds: xr.Dataset, lead_hour: int, output_dir: str,
+                            timestamp_str: str, label: str = "") -> None:
+        """Plot whichever derived precipitation fields are in ds (see DERIVED_PRECIP_VARS)."""
+        lats = ds['latitude'].values
+        lons = ds['longitude'].values
+        title_suffix = f"{label}\nForecast: {timestamp_str} + {lead_hour}h"
+        for var_name in DERIVED_PRECIP_VARS:
+            if var_name not in ds.variables or not product_wanted(f"{var_name}_surface", self.config.products):
+                continue
+            try:
+                data = np.squeeze(ds[var_name].values)
+                fig = self.create_plot(data, lats, lons, var_name, None, title_suffix)
+                filename = f"{var_name}_surface_lead{lead_hour:02d}h.png"
+                fig.savefig(os.path.join(output_dir, filename), dpi=self.config.dpi, bbox_inches='tight')
+                plt.close(fig)
+                logger.info(f"Saved: {filename}")
+            except Exception as e:
+                logger.error(f"Error plotting derived {var_name}: {e}")
+
+    @staticmethod
     def get_apcp_cmap() -> tuple:
         """Return colormap + norm for accumulated precipitation (APCP)."""
         apcp_levels = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 25, 35, 45, 60, 80, 100]
@@ -255,7 +297,7 @@ class ForecastPlotter:
         """Create a plot for a given variable."""
         
         # Get variable configuration from VARIABLE_METADATA
-        var_meta = VARIABLE_METADATA.get(var_name, {})
+        var_meta = VARIABLE_METADATA.get(var_name) or DERIVED_META.get(var_name, {})
         units = var_meta.get('units', '')
         long_name = var_meta.get('long_name', var_name)
         
@@ -265,6 +307,8 @@ class ForecastPlotter:
             cmap, norm, vmin, vmax = self.get_refc_cmap()
         elif var_name == 'APCP':
             cmap, norm, vmin, vmax = self.get_apcp_cmap()
+        elif var_name in DERIVED_META:
+            cmap, norm, vmin, vmax = self.get_apcp_accum_cmap()
         elif var_name == 'CAPE':
             cmap, norm, vmin, vmax = self.get_cape_cmap()
         elif var_name == 'CIN':
@@ -507,10 +551,20 @@ def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, i
         timestamp_str = f"{init_year}-{init_month}-{init_day} {init_hh}:00 UTC"
         output_subdir = f"{output_dir}/{date_str}/{member}_lead{h:02d}h"  # member is m00 / avg / spr
         utils.make_directory(output_subdir)
-        plotter.plot_pressure_level_variables(ds, h, output_subdir, timestamp_str)
-        plotter.plot_surface_variables(ds, h, output_subdir, timestamp_str)
-        if product_wanted("summary", config.products):
-            plotter.create_summary_plot(ds, h, output_subdir, timestamp_str)
+        if member == "lpmm":
+            # LPMM file only holds the precipitation products
+            plotter.plot_derived_precip(ds, h, output_subdir, timestamp_str, label=" (local PMM)")
+        else:
+            plotter.plot_pressure_level_variables(ds, h, output_subdir, timestamp_str)
+            plotter.plot_surface_variables(ds, h, output_subdir, timestamp_str)
+            if product_wanted("summary", config.products):
+                plotter.create_summary_plot(ds, h, output_subdir, timestamp_str)
+            # accumulated precipitation from derived_precip.py, if it has been run
+            precip_path = ds_path.replace(f"_f{h:02d}.nc", f"_precip_f{h:02d}.nc")
+            if os.path.exists(precip_path):
+                with xr.open_dataset(precip_path, decode_timedelta=True) as dsp:
+                    label = " (PMM)" if member == "avg" else ""
+                    plotter.plot_derived_precip(dsp, h, output_subdir, timestamp_str, label=label)
         logging.info(f"Plots for lead hour {h} saved to: {output_subdir}")
     finally:
         ds.close()
@@ -532,7 +586,7 @@ def plot_forecast_data(datetime_str: str,
         if member == "pmm":
             member = "avg"
         mem_str = str(member)
-        if mem_str not in {"avg", "spr"}:
+        if mem_str not in {"avg", "spr", "lpmm"}:
             mem_str = f"m{int(member):02d}"
 
         # Initialize plotter config (for passing to subprocesses)
@@ -582,7 +636,7 @@ def parse_arguments():
     parser.add_argument('inittime',
                        help='Forecast initialization time in format YYYY-MM-DDTHH (e.g., "2024-05-06T23")')
     parser.add_argument("lead_hour", help="Lead hour for forecast (0, 1, 2, ...)")
-    parser.add_argument("--members", nargs='+', required=True, help="List/range of member IDs (e.g., 0-2 4 6-7 pmm)")
+    parser.add_argument("--members", nargs='+', required=True, help="List/range of member IDs (e.g., 0-2 4 6-7 pmm spr lpmm)")
     parser.add_argument("--forecast_dir", default="./", help="Directory containing forecast files")
     parser.add_argument("--output_dir", default="./", help="Output directory for plots")
     parser.add_argument(

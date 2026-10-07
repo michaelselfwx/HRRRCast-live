@@ -115,7 +115,7 @@ const NAMES = {
   VGRD_0C:"V wind at 0 °C", WIND_0C:"Wind at 0 °C", DU_SFC_0C:"ΔU sfc–0 °C", DV_SFC_0C:"ΔV sfc–0 °C",
   SHEAR_SFC_0C:"Shear sfc–0 °C", WARM_LAYER_DEPTH:"Warm layer depth", COLD_LAYER_DEPTH:"Cold layer depth"
 };
-const memLabel = m => m === "avg" ? "PMM / mean" : m === "spr" ? "Spread" : "Member " + parseInt(m.slice(1),10);
+const memLabel = m => m === "avg" ? "PMM / mean" : m === "lpmm" ? "Local PMM (precip)" : m === "spr" ? "Spread" : "Member " + parseInt(m.slice(1),10);
 
 if (!M || !M.cases || !Object.keys(M.cases).length){
   document.querySelector("footer").hidden = true;
@@ -188,7 +188,7 @@ function fillMembers(){
   for (const m of avail){
     const b = document.createElement("button");
     b.className = "chip" + (S.members.has(m) ? " on" : "");
-    b.textContent = m === "avg" ? "PMM" : m === "spr" ? "spread" : parseInt(m.slice(1),10);
+    b.textContent = m === "avg" ? "PMM" : m === "lpmm" ? "LPMM" : m === "spr" ? "spread" : parseInt(m.slice(1),10);
     b.title = memLabel(m);
     b.onclick = () => { S.members.has(m) ? S.members.delete(m) : S.members.add(m);
                         if (!S.members.size) S.members.add(m); S.focus = null; refresh(); };

@@ -54,6 +54,9 @@ fi
 GET_ICS_WALLTIME=${GET_ICS_WALLTIME:-"00:20:00"}
 MAKE_ICS_WALLTIME=${MAKE_ICS_WALLTIME:-"00:20:00"}
 PLOT_WALLTIME=${PLOT_WALLTIME:-"01:00:00"}
+DERIVED_WALLTIME=${DERIVED_WALLTIME:-"00:30:00"}
+LPMM_PATCH=${LPMM_PATCH:-16}   # LPMM patch / halo size in grid points (3 km)
+LPMM_HALO=${LPMM_HALO:-24}
 
 PMM_POLL_SECONDS="60"
 PMM_MIN_AGE_SECONDS="90"
@@ -101,9 +104,14 @@ jobid5=$(sb --dependency=afterok:$jobid3:$jobid4 --array=$ARRAY_SPEC logs/job-fc
 echo "Submitted forecast array: $jobid5"
 last_jobid=$jobid5
 
+# derived precip (run total, 6 h, 12 h, LPMM); needs every member finished
+atparse < $JOBDIR/job-derived-precip.sh > logs/job-derived-precip.sh
+jobidD=$(sb --dependency=afterok:$jobid5 logs/job-derived-precip.sh) || exit 1; echo "Submitted derived_precip: $jobidD"
+last_jobid=$jobidD
+
 if [ "$RUNPLOT" == "YES" ]; then
     atparse < $JOBDIR/job-plot.sh > logs/job-plot.sh
-    jobid6=$(sb --dependency=afterok:$jobid5 --array=$ARRAY_SPEC logs/job-plot.sh) || exit 1
+    jobid6=$(sb --dependency=afterok:$jobid5:$jobidD --array=$ARRAY_SPEC logs/job-plot.sh) || exit 1
     echo "Submitted plot array: $jobid6"
     last_jobid=$jobid6
 fi
@@ -114,7 +122,7 @@ if [ $N_ENSEMBLES -ge 2 ]; then
     last_jobid=$jobid7
     if [ "$RUNPLOT" == "YES" ]; then
         atparse < $JOBDIR/job-plot.sh > logs/job-plot-pmm.sh
-        jobid8=$(sb --dependency=afterok:$jobid7 logs/job-plot-pmm.sh) || exit 1; echo "Submitted PMM plot: $jobid8"
+        jobid8=$(sb --dependency=afterok:$jobid7:$jobidD logs/job-plot-pmm.sh) || exit 1; echo "Submitted PMM plot: $jobid8"
         last_jobid=$jobid8
     fi
 fi
