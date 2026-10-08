@@ -25,7 +25,7 @@ from pathlib import Path
 CASE_RE = re.compile(r"^\d{8}$")
 HOUR_RE = re.compile(r"^\d{2}$")
 # member folder: m00 / memm00 (older plot.py) / mem0 / avg / memavg / spr ...  + _leadNNh
-MEMDIR_RE = re.compile(r"^(?:mem)?(m?\d+|avg|spr|pmm|lpmm)_lead(\d+)h$")  # m00, older memm00 / mem0, avg, spr
+MEMDIR_RE = re.compile(r"^(?:mem)?(m?\d+|avg|spr|pmm|lpmm|hrrr)_lead(\d+)h$")  # m00, older memm00 / mem0, avg, spr
 PNG_RE = re.compile(r"^(.+)_lead(\d+)h\.png$")
 
 
@@ -36,18 +36,22 @@ def product_wanted(product: str, patterns) -> bool:
     var = product[:-len("_surface")] if product.endswith("_surface") else product
     if var.endswith("hPa") and "_" in var:
         var = var.rsplit("_", 1)[0]
-    return any(fnmatch.fnmatchcase(product, p) or fnmatch.fnmatchcase(var, p) for p in patterns)
+    base = re.sub(r"_(TOT|\d+H)$", "", var)  # APCP_TOT / APCP_6H also match "APCP"
+    return any(fnmatch.fnmatchcase(product, p) or fnmatch.fnmatchcase(var, p) or fnmatch.fnmatchcase(base, p)
+               for p in patterns)
 
 
 def member_id(raw: str) -> str:
     if raw in ("avg", "pmm"):
         return "avg"
-    if raw in ("spr", "lpmm"):
+    if raw in ("spr", "lpmm", "hrrr"):
         return raw
     return f"m{int(raw.lstrip('m')):02d}"
 
 
 def member_sort_key(m: str):
+    if m == "hrrr":
+        return (-1, 0)          # operational HRRR first, as the reference
     if m.startswith("m"):
         return (0, int(m[1:]))
     return (1, {"avg": 0, "lpmm": 1, "spr": 2}.get(m, 9))
