@@ -9,6 +9,7 @@ per-member files (YYYYMMDD/HH/hrrrcast_mNN_fHH.nc) this script writes, for every
       APCP_TOT   total precipitation f00 -> fH
       APCP_6H    6-h total ending at fH   (H >= 6)
       APCP_12H   12-h total ending at fH  (H >= 12)
+  HRRR         hrrrcast_hrrr_precip_fHH.nc  same, for the operational HRRR (get_hrrr_fcst.py), if present
   ensemble     hrrrcast_avg_precip_fHH.nc   domain-wide PMM of APCP_TOT / APCP_6H / APCP_12H
                hrrrcast_lpmm_fHH.nc         local PMM (LPMM) of APCP, APCP_TOT, APCP_6H, APCP_12H
 
@@ -115,43 +116,58 @@ def write(path: str, template: xr.DataArray, fields: dict, extra_attrs: dict):
 
 
 # --------------------------------------------------------------------------- main
+REFERENCE_RUNS = ("hrrr",)   # non-ensemble runs (get_hrrr_fcst.py): accumulations only, no PMM
+
+
 def run(inittime: str, lead_hours: int, forecast_dir: str, patch: int, halo: int, smooth: float,
         do_lpmm: bool):
     _, y, mo, d, hh = utils.validate_datetime(inittime)
     case_dir = os.path.join(forecast_dir, f"{y}{mo}{d}", hh)
-    members = find_members(case_dir)
-    if not members:
-        raise FileNotFoundError(f"No hrrrcast_mNN_f01.nc files in {case_dir}")
-    logger.info(f"{case_dir}: members {members}, hours 1-{lead_hours}")
+    members = [f"m{m:02d}" for m in find_members(case_dir)]
+    refs = [r for r in REFERENCE_RUNS if os.path.exists(os.path.join(case_dir, f"hrrrcast_{r}_f01.nc"))]
+    if not members and not refs:
+        raise FileNotFoundError(f"No hrrrcast_mNN_f01.nc (or hrrrcast_hrrr_f01.nc) files in {case_dir}")
+    logger.info(f"{case_dir}: members {members}, reference runs {refs}, hours 1-{lead_hours}")
 
-    totals = {m: [np.zeros(0, np.float32)] for m in members}   # cumulative totals; index = hour
+    totals = {m: [np.zeros(0, np.float32)] for m in members + refs}   # cumulative totals; index = hour
+    keep = max(WINDOWS.values())
     for h in range(1, lead_hours + 1):
-        hourly, template = {}, None
-        for m in members:
-            path = os.path.join(case_dir, f"hrrrcast_m{m:02d}_f{h:02d}.nc")
-            if not os.path.exists(path):
-                logger.warning(f"Missing {os.path.basename(path)}; stopping at f{h - 1:02d}")
-                return
-            template, vals = read_apcp(path)
+        # ensemble members must all be present; a reference run that ends early is just dropped
+        if members and not all(os.path.exists(os.path.join(case_dir, f"hrrrcast_{m}_f{h:02d}.nc"))
+                               for m in members):
+            logger.warning(f"Missing member files for f{h:02d}; ensemble products stop at f{h - 1:02d}")
+            members = []
+        for r in list(refs):
+            if not os.path.exists(os.path.join(case_dir, f"hrrrcast_{r}_f{h:02d}.nc")):
+                logger.warning(f"Missing hrrrcast_{r}_f{h:02d}.nc; {r} products stop at f{h - 1:02d}")
+                refs.remove(r)
+        if not members and not refs:
+            return
+
+        hourly, member_fields, template = {}, {}, None
+        for m in members + refs:
+            template, vals = read_apcp(os.path.join(case_dir, f"hrrrcast_{m}_f{h:02d}.nc"))
             vals = np.maximum(np.nan_to_num(vals), 0)
             hourly[m] = vals
             prev = totals[m][-1] if totals[m][-1].size else np.zeros_like(vals)
             totals[m].append(prev + vals)
 
-        # per-member accumulations
-        member_fields = {}
-        for m in members:
+            # per-member accumulations
             f = {"APCP_TOT": totals[m][h]}
             for name, w in WINDOWS.items():
                 if h >= w:
                     start = totals[m][h - w] if (h - w) > 0 else 0.0
                     f[name] = totals[m][h] - start
             member_fields[m] = f
-            write(os.path.join(case_dir, f"hrrrcast_m{m:02d}_precip_f{h:02d}.nc"), template, f,
+            write(os.path.join(case_dir, f"hrrrcast_{m}_precip_f{h:02d}.nc"), template, f,
                   {"source": "derived_precip.py"})
+            # drop history no longer needed for the longest window
+            if h - keep - 1 >= 1:
+                totals[m][h - keep - 1] = np.zeros(0, np.float32)
 
-        # ensemble products
+        # ensemble products (HRRRCast members only)
         if len(members) >= 2:
+            template = read_apcp(os.path.join(case_dir, f"hrrrcast_{members[0]}_f{h:02d}.nc"))[0]
             names = list(member_fields[members[0]])
             stacks = {n: np.stack([member_fields[m][n] for m in members]) for n in names}
             write(os.path.join(case_dir, f"hrrrcast_avg_precip_f{h:02d}.nc"), template,
@@ -164,12 +180,6 @@ def run(inittime: str, lead_hours: int, forecast_dir: str, patch: int, halo: int
                       {"processing_method": "local_probability_matched_mean",
                        "lpmm_patch_points": patch, "lpmm_halo_points": halo,
                        "lpmm_smooth_sigma": smooth})
-
-        # drop history no longer needed for the longest window
-        keep = max(WINDOWS.values())
-        for m in members:
-            if h - keep - 1 >= 1:
-                totals[m][h - keep - 1] = np.zeros(0, np.float32)
 
 
 def main():
