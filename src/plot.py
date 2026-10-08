@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import fnmatch
+import re
 import logging
 import os
 import sys
@@ -94,7 +95,9 @@ def product_wanted(product: str, patterns: Optional[List[str]]) -> bool:
             var = var[: -len(suffix)]
     if var.endswith("hPa") and "_" in var:
         var = var.rsplit("_", 1)[0]
-    return any(fnmatch.fnmatchcase(product, p) or fnmatch.fnmatchcase(var, p) for p in patterns)
+    base = re.sub(r"_(TOT|\d+H)$", "", var)  # APCP_TOT / APCP_6H also match "APCP"
+    return any(fnmatch.fnmatchcase(product, p) or fnmatch.fnmatchcase(var, p) or fnmatch.fnmatchcase(base, p)
+               for p in patterns)
 
 logger = None
 
@@ -115,6 +118,8 @@ class ForecastPlotterConfig:
     """Configuration class for forecast plotting parameters."""
     
     def __init__(self):
+        # prefix for plot titles, e.g. "HRRR " for the operational HRRR run
+        self.run_label = ""
         # Variable definitions matching the preprocessor
         self.pl_vars = ["UGRD", "VGRD", "VVEL", "TMP", "HGT", "SPFH"]
         # Updated surface variable list (matches preprocessing)
@@ -227,7 +232,7 @@ class ForecastPlotter:
         """Plot whichever derived precipitation fields are in ds (see DERIVED_PRECIP_VARS)."""
         lats = ds['latitude'].values
         lons = ds['longitude'].values
-        title_suffix = f"{label}\nForecast: {timestamp_str} + {lead_hour}h"
+        title_suffix = f"{label}\n{self.config.run_label}Forecast: {timestamp_str} + {lead_hour}h"
         for var_name in DERIVED_PRECIP_VARS:
             if var_name not in ds.variables or not product_wanted(f"{var_name}_surface", self.config.products):
                 continue
@@ -373,7 +378,7 @@ class ForecastPlotter:
         lons = ds['longitude'].values
         
         # Create title suffix with forecast information
-        title_suffix = f"\nForecast: {timestamp_str} + {lead_hour}h"
+        title_suffix = f"\n{self.config.run_label}Forecast: {timestamp_str} + {lead_hour}h"
         
         # Plot each variable at each level
         levels_in_ds = ds['level'].values if 'level' in ds.dims or 'level' in ds.coords else self.config.levels
@@ -417,7 +422,7 @@ class ForecastPlotter:
         lons = ds['longitude'].values
         
         # Create title suffix with forecast information
-        title_suffix = f"\nForecast: {timestamp_str} + {lead_hour}h"
+        title_suffix = f"\n{self.config.run_label}Forecast: {timestamp_str} + {lead_hour}h"
         
         # Plot each surface variable
         for var_name in self.config.sfc_vars:
@@ -521,7 +526,7 @@ class ForecastPlotter:
                 plt.colorbar(im, ax=axes[i], shrink=0.4)
                 
                 # Set title
-                axes[i].set_title(f"{title}\nForecast: {timestamp_str} + {lead_hour}h", 
+                axes[i].set_title(f"{title}\n{self.config.run_label}Forecast: {timestamp_str} + {lead_hour}h", 
                                 fontsize=10, fontweight='bold')
                 axes[i].grid(True, alpha=0.3)
             
@@ -544,12 +549,14 @@ def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, i
     config = ForecastPlotterConfig()
     for k, v in config_dict.items():
         setattr(config, k, v)
+    if member == "hrrr":
+        config.run_label = "HRRR "
     plotter = ForecastPlotter(config)
     ds = xr.open_dataset(ds_path, decode_timedelta=True)
     try:
         valid_datetime = init_datetime + timedelta(hours=h)
         timestamp_str = f"{init_year}-{init_month}-{init_day} {init_hh}:00 UTC"
-        output_subdir = f"{output_dir}/{date_str}/{member}_lead{h:02d}h"  # member is m00 / avg / spr
+        output_subdir = f"{output_dir}/{date_str}/{member}_lead{h:02d}h"  # member is m00 / avg / spr / lpmm / hrrr
         utils.make_directory(output_subdir)
         if member == "lpmm":
             # LPMM file only holds the precipitation products
@@ -586,7 +593,7 @@ def plot_forecast_data(datetime_str: str,
         if member == "pmm":
             member = "avg"
         mem_str = str(member)
-        if mem_str not in {"avg", "spr", "lpmm"}:
+        if mem_str not in {"avg", "spr", "lpmm", "hrrr"}:
             mem_str = f"m{int(member):02d}"
 
         # Initialize plotter config (for passing to subprocesses)
@@ -636,7 +643,7 @@ def parse_arguments():
     parser.add_argument('inittime',
                        help='Forecast initialization time in format YYYY-MM-DDTHH (e.g., "2024-05-06T23")')
     parser.add_argument("lead_hour", help="Lead hour for forecast (0, 1, 2, ...)")
-    parser.add_argument("--members", nargs='+', required=True, help="List/range of member IDs (e.g., 0-2 4 6-7 pmm spr lpmm)")
+    parser.add_argument("--members", nargs='+', required=True, help="List/range of member IDs (e.g., 0-2 4 6-7 pmm spr lpmm hrrr)")
     parser.add_argument("--forecast_dir", default="./", help="Directory containing forecast files")
     parser.add_argument("--output_dir", default="./", help="Output directory for plots")
     parser.add_argument(

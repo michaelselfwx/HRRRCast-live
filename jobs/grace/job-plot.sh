@@ -13,6 +13,7 @@ PACKAGEROOT=@[PACKAGEROOT]
 DATAROOT=@[DATAROOT]
 N_ENSEMBLES=@[N_ENSEMBLES]
 N_GPUS=@[N_GPUS]
+PLOT_MEMBERS="@[PLOT_MEMBERS]"   # non-array runs: which special members to plot
 
 # conda
 source ${PACKAGEROOT}/etc/env_grace.sh
@@ -41,7 +42,7 @@ if [ -v SLURM_ARRAY_TASK_ID ]; then
     fi
     MEMBER_RANGE="${start}-${end}"
 else
-    MEMBER_RANGE="avg spr lpmm"
+    MEMBER_RANGE="${PLOT_MEMBERS:-avg spr lpmm}"
 fi
 
 echo "In plot, init_time=${INIT_TIME}, lead_hour=${LEAD_HOUR}, TASK_ID=${TASK_ID}, MEMBER_RANGE=${MEMBER_RANGE}"
