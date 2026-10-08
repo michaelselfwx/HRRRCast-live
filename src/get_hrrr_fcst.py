@@ -217,6 +217,44 @@ def crop_from_reference(ref: Path, lats: np.ndarray, lons: np.ndarray) -> Tuple[
     return int(y0), int(y1), int(x0), int(x1)
 
 
+def crop_dataset_to_reference(ds: xr.Dataset, ref: Path) -> xr.Dataset:
+    """Crop a (larger) HRRR dataset to the reference file's grid; unchanged if already equal."""
+    with xr.open_dataset(ref, decode_timedelta=True) as r:
+        rshape = r["latitude"].shape
+    if ds["latitude"].shape == rshape:
+        return ds
+    y0, y1, x0, x1 = crop_from_reference(ref, ds["latitude"].values, ds["longitude"].values)
+    ydim, xdim = ds["latitude"].dims
+    return ds.isel({ydim: slice(y0, y1), xdim: slice(x0, x1)})
+
+
+def recrop_existing(case_dir: Path, ref: Path, init_dt) -> int:
+    """Crop hrrrcast_hrrr_*.nc files written on a bigger grid (e.g. the full CONUS grid because
+    the HRRRCast output was not there yet) to the HRRRCast domain, in place. No download."""
+    from cf_attributes import get_cf_encoding
+    with xr.open_dataset(ref, decode_timedelta=True) as r:
+        rshape = r["latitude"].shape
+    n = 0
+    for f in sorted(case_dir.glob("hrrrcast_hrrr_*f[0-9][0-9].nc")):
+        with xr.open_dataset(f, decode_timedelta=False) as ds:   # keep lead_time as written
+            if ds["latitude"].shape == rshape:
+                continue
+            try:
+                out = crop_dataset_to_reference(ds, ref).load()
+            except ValueError as e:
+                logger.warning(f"Cannot crop {f.name} to {ref.name}: {e}")
+                continue
+        for v in out.variables:
+            out[v].encoding = {}
+        enc = get_cf_encoding(out, init_dt) if "_precip_" not in f.name else None
+        tmp = str(f) + ".tmp"
+        out.to_netcdf(tmp, encoding=enc, engine=utils.netcdf_engine())
+        os.replace(tmp, f)
+        n += 1
+        logger.info(f"Cropped existing {f.name} to the HRRRCast domain {rshape[0]}x{rshape[1]}")
+    return n
+
+
 # --------------------------------------------------------------------------- convert
 def _pick_apcp(msgs, h: int):
     """1-h accumulation ending at fH (HRRR sfc files also hold the 0-H total)."""
@@ -347,9 +385,11 @@ def run(inittime: str, lead_hours: int, base_dir: str, start_hour: int = 1,
         ref = find_reference(case_dir)
         if ref is None:
             logger.warning(f"No hrrrcast_mNN_fHH.nc in {case_dir} to copy the crop from; "
-                           "writing the full HRRR grid (use --subset to crop)")
+                           "writing the full HRRR grid. Rerun this script after fcst.py (it then "
+                           "crops the existing files without downloading again) or pass --subset.")
         else:
             logger.info(f"Matching the grid of {ref.name}")
+            recrop_existing(case_dir, ref, init_dt)
 
     hours = [h for h in range(start_hour, lead_hours + 1)
              if overwrite or not (case_dir / f"hrrrcast_hrrr_f{h:02d}.nc").exists()]

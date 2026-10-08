@@ -544,6 +544,19 @@ class ForecastPlotter:
             logger.error(f"Error creating summary plot: {e}")
 
 
+def crop_like_members(ds, ds_path):
+    """Show the operational HRRR on the same domain as the HRRRCast members, even if its file
+    holds a bigger grid (get_hrrr_fcst.py ran before the HRRRCast output existed)."""
+    try:
+        from pathlib import Path
+        from get_hrrr_fcst import find_reference, crop_dataset_to_reference
+        ref = find_reference(Path(os.path.dirname(ds_path)))
+        return crop_dataset_to_reference(ds, ref) if ref else ds
+    except Exception as e:
+        logging.warning(f"Could not crop HRRR to the HRRRCast domain: {e}")
+        return ds
+
+
 def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, init_hh, output_dir, date_str, member, config_dict):
     # Reconstruct config and plotter
     config = ForecastPlotterConfig()
@@ -553,6 +566,8 @@ def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, i
         config.run_label = "HRRR "
     plotter = ForecastPlotter(config)
     ds = xr.open_dataset(ds_path, decode_timedelta=True)
+    if member == "hrrr":
+        ds = crop_like_members(ds, ds_path)
     try:
         valid_datetime = init_datetime + timedelta(hours=h)
         timestamp_str = f"{init_year}-{init_month}-{init_day} {init_hh}:00 UTC"
@@ -570,6 +585,8 @@ def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, i
             precip_path = ds_path.replace(f"_f{h:02d}.nc", f"_precip_f{h:02d}.nc")
             if os.path.exists(precip_path):
                 with xr.open_dataset(precip_path, decode_timedelta=True) as dsp:
+                    if member == "hrrr":
+                        dsp = crop_like_members(dsp, ds_path)
                     label = " (PMM)" if member == "avg" else ""
                     plotter.plot_derived_precip(dsp, h, output_subdir, timestamp_str, label=label)
         logging.info(f"Plots for lead hour {h} saved to: {output_subdir}")
