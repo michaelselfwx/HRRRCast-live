@@ -46,6 +46,8 @@ from utils import setup_logging
 
 logger = logging.getLogger(__name__)
 
+HOUR_THREADS = 3     # forecast hours downloaded at once
+RANGE_THREADS = 8    # byte-range requests in flight per file
 HRRR_BASE_URL = os.environ.get("HRRR_BASE_URL", "https://noaa-hrrr-bdp-pds.s3.amazonaws.com")
 
 # Same variables / levels as make_ics.WeatherPreprocessConfig (kept here so this script does
@@ -86,7 +88,7 @@ SFC_FIELDS = {
 # --------------------------------------------------------------------------- download
 def _session() -> requests.Session:
     s = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=16,
+    adapter = requests.adapters.HTTPAdapter(pool_connections=4, pool_maxsize=HOUR_THREADS * RANGE_THREADS + 4,
                                             max_retries=requests.adapters.Retry(
                                                 total=4, backoff_factor=2,
                                                 status_forcelist=(429, 500, 502, 503, 504)))
@@ -158,7 +160,7 @@ def fetch_subset(url: str, keys, out_path: Path, session: requests.Session) -> b
                 logger.warning(f"Range {a}-{b} of {url} failed ({e}); retrying")
                 time.sleep(2 * (attempt + 1))
 
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    with ThreadPoolExecutor(max_workers=RANGE_THREADS) as ex:
         chunks = list(ex.map(get, ranges))
     with open(tmp, "wb") as f:
         for c in chunks:
@@ -358,7 +360,7 @@ def run(inittime: str, lead_hours: int, base_dir: str, start_hour: int = 1,
 
     session = _session()
     done, failed = [], []
-    with ThreadPoolExecutor(max_workers=3) as dl, ProcessPoolExecutor(max_workers=workers) as cv:
+    with ThreadPoolExecutor(max_workers=HOUR_THREADS) as dl, ProcessPoolExecutor(max_workers=workers) as cv:
         dl_futs = {dl.submit(download_hour, ymd, hh, h, grib_dir, session): h for h in hours}
         cv_futs = {}
         for fut in as_completed(dl_futs):
