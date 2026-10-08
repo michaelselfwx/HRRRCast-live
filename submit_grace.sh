@@ -12,6 +12,8 @@
 #   GRACE_GPU    a100 (40 GB, default) or a40 (48 GB)
 #   FCST_EXTRA   extra fcst.py args, e.g. "--bbox 25.8,36.5,-106.7,-93.5"
 #   GET_BCS_EXTRA extra get_bcs.py args, e.g. "--stitch_cycles" for pre-2021 cases
+#   RUNHRRR      YES (default) to also fetch the operational HRRR forecast of the same cycle
+#                as member "hrrr" (verification / side-by-side in the viewer); NO to skip
 #   FCST_WALLTIME / PMM_WALLTIME / ...  override any walltime below
 #   HRRRCAST_CONDA_SH / HRRRCAST_CONDA_ENV  where conda lives / env name (etc/env_grace.sh)
 
@@ -30,6 +32,7 @@ GRACE_GPU=${GRACE_GPU:-a100}
 case "$GRACE_GPU" in a100|a40) ;; *) echo "GRACE_GPU must be a100 or a40" >&2; exit 1;; esac
 FCST_EXTRA=${FCST_EXTRA:---bbox 25.8,36.5,-106.7,-93.5} # texas domain
 GET_BCS_EXTRA=${GET_BCS_EXTRA:-}
+RUNHRRR=${RUNHRRR:-YES}
 
 SBATCH_ACCOUNT_OPT=""
 if [ -n "${ACCNR:-}" ]; then SBATCH_ACCOUNT_OPT="--account=${ACCNR}"; fi
@@ -55,6 +58,7 @@ GET_ICS_WALLTIME=${GET_ICS_WALLTIME:-"00:20:00"}
 MAKE_ICS_WALLTIME=${MAKE_ICS_WALLTIME:-"00:20:00"}
 PLOT_WALLTIME=${PLOT_WALLTIME:-"01:00:00"}
 DERIVED_WALLTIME=${DERIVED_WALLTIME:-"00:30:00"}
+HRRR_WALLTIME=${HRRR_WALLTIME:-"01:00:00"}
 LPMM_PATCH=${LPMM_PATCH:-16}   # LPMM patch / halo size in grid points (3 km)
 LPMM_HALO=${LPMM_HALO:-24}
 
@@ -104,9 +108,17 @@ jobid5=$(sb --dependency=afterok:$jobid3:$jobid4 --array=$ARRAY_SPEC logs/job-fc
 echo "Submitted forecast array: $jobid5"
 last_jobid=$jobid5
 
+# operational HRRR forecast of the same cycle, cropped to the HRRRCast grid (member "hrrr")
+DERIVED_DEP="afterok:$jobid5"
+if [ "$RUNHRRR" == "YES" ]; then
+    atparse < $JOBDIR/job-get-hrrr-fcst.sh > logs/job-get-hrrr-fcst.sh
+    jobidH=$(sb --dependency=afterok:$jobid5 logs/job-get-hrrr-fcst.sh) || exit 1; echo "Submitted get_hrrr_fcst: $jobidH"
+    DERIVED_DEP="afterok:$jobid5,afterany:$jobidH"   # derived precip runs even if HRRR fails
+fi
+
 # derived precip (run total, 6 h, 12 h, LPMM); needs every member finished
 atparse < $JOBDIR/job-derived-precip.sh > logs/job-derived-precip.sh
-jobidD=$(sb --dependency=afterok:$jobid5 logs/job-derived-precip.sh) || exit 1; echo "Submitted derived_precip: $jobidD"
+jobidD=$(sb --dependency=$DERIVED_DEP logs/job-derived-precip.sh) || exit 1; echo "Submitted derived_precip: $jobidD"
 last_jobid=$jobidD
 
 if [ "$RUNPLOT" == "YES" ]; then
@@ -114,6 +126,10 @@ if [ "$RUNPLOT" == "YES" ]; then
     jobid6=$(sb --dependency=afterok:$jobid5:$jobidD --array=$ARRAY_SPEC logs/job-plot.sh) || exit 1
     echo "Submitted plot array: $jobid6"
     last_jobid=$jobid6
+    if [ "$RUNHRRR" == "YES" ]; then
+        atparse PLOT_MEMBERS=hrrr < $JOBDIR/job-plot.sh > logs/job-plot-hrrr.sh
+        jobidHP=$(sb --dependency=afterok:$jobidH:$jobidD logs/job-plot-hrrr.sh) || exit 1; echo "Submitted HRRR plot: $jobidHP"
+    fi
 fi
 
 if [ $N_ENSEMBLES -ge 2 ]; then
@@ -121,7 +137,7 @@ if [ $N_ENSEMBLES -ge 2 ]; then
     jobid7=$(sb --dependency=after:$jobid5 logs/job-compute-pmm.sh) || exit 1; echo "Submitted compute_pmm: $jobid7"
     last_jobid=$jobid7
     if [ "$RUNPLOT" == "YES" ]; then
-        atparse < $JOBDIR/job-plot.sh > logs/job-plot-pmm.sh
+        atparse PLOT_MEMBERS="avg spr lpmm" < $JOBDIR/job-plot.sh > logs/job-plot-pmm.sh
         jobid8=$(sb --dependency=afterok:$jobid7:$jobidD logs/job-plot-pmm.sh) || exit 1; echo "Submitted PMM plot: $jobid8"
         last_jobid=$jobid8
     fi
