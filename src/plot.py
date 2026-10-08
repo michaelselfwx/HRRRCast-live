@@ -336,7 +336,7 @@ class ForecastPlotter:
             if self.config.zoom_extent is not None:
                 ax.set_extent(self.config.zoom_extent, crs=ccrs.PlateCarree())
 
-            ax.gridlines(draw_labels=True)
+            ax.gridlines(draw_labels=False)
         else:
             fig, ax = plt.subplots(figsize=self.config.figure_size)
         
@@ -359,9 +359,6 @@ class ForecastPlotter:
         # Set labels
         ax.set_xlabel('Longitude', fontsize=10)
         ax.set_ylabel('Latitude', fontsize=10)
-        
-        # Set grid
-        ax.grid(True, alpha=0.3)
         
         # Adjust layout
         plt.tight_layout()
