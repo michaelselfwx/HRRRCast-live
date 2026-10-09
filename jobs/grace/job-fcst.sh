@@ -22,6 +22,9 @@ export NETCDF2GRIB_SECTION3=@[NETCDF2GRIB_SECTION3]
 export WGRIB2=@[WGRIB2]
 export TF_CPP_MIN_LOG_LEVEL=1
 export TF_GPU_ALLOCATOR=cuda_malloc_async
+# No XLA JIT: avoids XLA's run-time LLVM/libdevice compile ("llvm_gpu_backend/utils.cc ... Aborted")
+# and its extra GPU memory. Set to 1 to turn it back on.
+export HRRRCAST_XLA=${HRRRCAST_XLA:-0}
 
 source ${PACKAGEROOT}/etc/env_grace.sh
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true

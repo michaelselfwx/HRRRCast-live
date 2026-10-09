@@ -290,8 +290,12 @@ class ForecastModel:
             tf.config.set_visible_devices([], "GPU")
             logger.warning("No GPUs used, running on CPU only.")
 
-        # set JIT compilation of graphs
-        tf.config.optimizer.set_jit(True)
+        # XLA auto-JIT of graphs. HRRRCAST_XLA=0 turns it off: XLA compiles GPU kernels with
+        # LLVM at run time (needs CUDA's libdevice.10.bc, and extra GPU memory for its buffers);
+        # the cuDNN path without it is about as fast for this model.
+        use_xla = os.environ.get("HRRRCAST_XLA", "1").strip().lower() not in ("0", "false", "no", "off")
+        tf.config.optimizer.set_jit(use_xla)
+        logger.info(f"XLA JIT {'on' if use_xla else 'off'} (HRRRCAST_XLA)")
     
     def _load_model(self):
         """Load the TensorFlow model."""
