@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=fcst
 #SBATCH --output=logs/fcst_%A_%a.out
-##SBATCH --partition=gpu-a40
+#SBATCH --partition=gpu-a40
 ##SBATCH --gpus-per-node=1
-#SBATCH --gres=gpu:@[GRACE_GPU]:1
+##SBATCH --gres=gpu:@[GRACE_GPU]:1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=48
-#SBATCH --mem=360G
+#SBATCH --cpus-per-task=24
+#SBATCH --mem=170G
 #SBATCH --time=@[FCST_WALLTIME]
 
 INIT_TIME="@[INIT_TIME]"
