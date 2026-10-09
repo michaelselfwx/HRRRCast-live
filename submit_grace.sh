@@ -14,8 +14,8 @@
 #   GET_BCS_EXTRA extra get_bcs.py args, e.g. "--stitch_cycles" for pre-2021 cases
 #   RUNHRRR      YES (default) to also fetch the operational HRRR forecast of the same cycle
 #                as member "hrrr" (verification / side-by-side in the viewer); NO to skip
-#   RUNPMM       NO (default) / YES: also run compute_pmm.py and plot the ensemble PMM/mean
-#                ("avg") and spread ("spr"). Plotted by default: hrrr, lpmm, m00..m(N-1)
+#   PLOT_AVG     NO (default) / YES: also plot the ensemble PMM/mean ("avg").
+#                Plotted by default: hrrr, m00..m(N-1), lpmm, spr (spread); lpmm/spr need 2+ members
 #   FCST_WALLTIME / PMM_WALLTIME / ...  override any walltime below
 #   HRRRCAST_CONDA_SH / HRRRCAST_CONDA_ENV  where conda lives / env name (etc/env_grace.sh)
 
@@ -35,7 +35,7 @@ case "$GRACE_GPU" in a100|a40) ;; *) echo "GRACE_GPU must be a100 or a40" >&2; e
 FCST_EXTRA=${FCST_EXTRA:---bbox 25.8,36.5,-106.7,-93.5} # texas domain
 GET_BCS_EXTRA=${GET_BCS_EXTRA:-}
 RUNHRRR=${RUNHRRR:-YES}
-RUNPMM=${RUNPMM:-NO}
+PLOT_AVG=${PLOT_AVG:-NO}
 
 SBATCH_ACCOUNT_OPT=""
 if [ -n "${ACCNR:-}" ]; then SBATCH_ACCOUNT_OPT="--account=${ACCNR}"; fi
@@ -138,18 +138,15 @@ if [ "$RUNPLOT" == "YES" ]; then
     fi
 fi
 
-# Ensemble products (need 2+ members). LPMM comes from derived_precip and is always plotted;
-# the PMM/mean ("avg") and spread ("spr") from compute_pmm only with RUNPMM=YES.
+# Ensemble products (need 2+ members): LPMM from derived_precip, spread ("spr") and PMM/mean
+# ("avg") from compute_pmm. Plotted: lpmm + spr, plus avg with PLOT_AVG=YES.
 if [ $N_ENSEMBLES -ge 2 ]; then
-    ENS_PLOT_MEMBERS="lpmm"
-    ENS_PLOT_DEP="afterok:$jobidD"
-    if [ "$RUNPMM" == "YES" ]; then
-        atparse < $JOBDIR/job-compute-pmm.sh > logs/job-compute-pmm.sh
-        jobid7=$(sb --dependency=$FCST_DONE logs/job-compute-pmm.sh) || exit 1; echo "Submitted compute_pmm: $jobid7"
-        last_jobid=$jobid7
-        ENS_PLOT_MEMBERS="lpmm avg spr"
-        ENS_PLOT_DEP="afterok:$jobid7:$jobidD"
-    fi
+    atparse < $JOBDIR/job-compute-pmm.sh > logs/job-compute-pmm.sh
+    jobid7=$(sb --dependency=$FCST_DONE logs/job-compute-pmm.sh) || exit 1; echo "Submitted compute_pmm: $jobid7"
+    last_jobid=$jobid7
+    ENS_PLOT_MEMBERS="lpmm spr"
+    [ "$PLOT_AVG" == "YES" ] && ENS_PLOT_MEMBERS="avg lpmm spr"
+    ENS_PLOT_DEP="afterok:$jobid7:$jobidD"
     if [ "$RUNPLOT" == "YES" ]; then
         atparse PLOT_MEMBERS="$ENS_PLOT_MEMBERS" < $JOBDIR/job-plot.sh > logs/job-plot-ens.sh
         jobid8=$(sb --dependency=$ENS_PLOT_DEP logs/job-plot-ens.sh) || exit 1; echo "Submitted ensemble plot ($ENS_PLOT_MEMBERS): $jobid8"

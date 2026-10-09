@@ -8,8 +8,9 @@
 # One CPU job per case, which runs in order:
 #   1. get_hrrr_fcst.py   operational HRRR of the same cycle (skips hours already downloaded)
 #   2. derived_precip.py  run-total / 6 h / 12 h precip and LPMM
-#   3. plot.py            hrrr, lpmm, m00..m(N-1) on the tx and hcfcd domains
-#   4. make_viewer_index.py
+#   3. compute_pmm.py     ensemble spread (and PMM/mean), if 2+ members and not done yet
+#   4. plot.py            hrrr, m00..m(N-1), lpmm, spr on the tx and hcfcd domains
+#   5. make_viewer_index.py
 # The lead hours and member count are read from the hrrrcast_mNN_fHH.nc files in each case.
 #
 # Environment knobs (same names as submit_grace.sh where they overlap):
@@ -18,7 +19,9 @@
 #   RUNHRRR            YES (default) / NO   fetch + plot the operational HRRR
 #   HRRRCAST_PLOT_DOMAINS   default "tx hcfcd"
 #   PLOT_PRODUCTS      default: REFC APCP* CAPE T2M WIND_10M MSLMA HLCY_0_3km HGT_500hPa
-#   REMOVE_PMM_PLOTS   NO (default) / YES   delete old avg_/spr_ plot folders so they leave the viewer
+#   PLOT_AVG           NO (default) / YES   also plot the ensemble PMM/mean ("avg")
+#   REDO_PMM           NO (default) / YES   rerun compute_pmm even if the spread files exist
+#   REMOVE_AVG_PLOTS   NO (default) / YES   delete old avg_ plot folders so they leave the viewer
 #   REPLOT_WALLTIME    default 02:00:00
 #   DRYRUN=1           write the job scripts but don't submit them
 
@@ -27,7 +30,9 @@ DATAROOT=${DATAROOT:-$SCRATCH/hrrrcast-data}
 RUNHRRR=${RUNHRRR:-YES}
 PLOT_DOMAINS=${HRRRCAST_PLOT_DOMAINS:-tx hcfcd}
 PLOT_PRODUCTS=${PLOT_PRODUCTS:-REFC APCP* CAPE T2M WIND_10M MSLMA HLCY_0_3km HGT_500hPa}
-REMOVE_PMM_PLOTS=${REMOVE_PMM_PLOTS:-NO}
+PLOT_AVG=${PLOT_AVG:-NO}
+REDO_PMM=${REDO_PMM:-NO}
+REMOVE_AVG_PLOTS=${REMOVE_AVG_PLOTS:-NO}
 REPLOT_WALLTIME=${REPLOT_WALLTIME:-02:00:00}
 
 if [ $# -eq 0 ]; then
@@ -57,8 +62,12 @@ for INIT in "$@"; do
     LEAD=$(ls "$CASE_DIR"/hrrrcast_m${FIRST}_f[0-9][0-9]*.nc 2>/dev/null | grep -E '_f[0-9]+\.nc$' \
            | sed -E 's/.*_f([0-9]+)\.nc/\1/' | sort -n | tail -1 | sed 's/^0*//')
     MEMLIST=$(echo "$MEMBERS" | sed 's/^0*\([0-9]\)/\1/' | paste -sd' ')
+    NMAX=$(( 10#$(echo "$MEMBERS" | tail -1) + 1 ))     # compute_pmm looks for m00..m(NMAX-1)
     PLOT_MEMBERS="$MEMLIST"
-    (( N >= 2 )) && PLOT_MEMBERS="lpmm $PLOT_MEMBERS"
+    if (( N >= 2 )); then
+        PLOT_MEMBERS="$PLOT_MEMBERS lpmm spr"
+        [ "$PLOT_AVG" == "YES" ] && PLOT_MEMBERS="$PLOT_MEMBERS avg"
+    fi
     [ "$RUNHRRR" == "YES" ] && PLOT_MEMBERS="hrrr $PLOT_MEMBERS"
 
     JOB="$DATAROOT/logs/job-replot-${YMD}${HH}.sh"
@@ -85,9 +94,18 @@ fi
 python ${PACKAGEROOT}/src/derived_precip.py ${INIT} ${LEAD} --forecast_dir ${DATAROOT} \\
     || echo "WARNING: derived_precip failed; accumulated precip / LPMM plots will be missing"
 
-if [ "${REMOVE_PMM_PLOTS}" == "YES" ]; then
-    find ${CASE_DIR} -maxdepth 2 -type d \\( -name 'avg_lead*' -o -name 'spr_lead*' \\) -prune -exec rm -rf {} +
-    echo "Removed old avg_/spr_ plot folders"
+if (( ${N} >= 2 )); then
+    if [ "${REDO_PMM}" == "YES" ] || [ ! -f ${CASE_DIR}/hrrrcast_spr_f\$(printf %02d ${LEAD}).nc ]; then
+        python ${PACKAGEROOT}/src/compute_pmm.py ${INIT} ${LEAD} --forecast_dir ${DATAROOT} --output_dir ${DATAROOT} \\
+            --n_ensembles ${NMAX} --no_wait || echo "WARNING: compute_pmm failed; spread plots will be missing"
+    else
+        echo "Spread files already there; skipping compute_pmm (REDO_PMM=YES to redo)"
+    fi
+fi
+
+if [ "${REMOVE_AVG_PLOTS}" == "YES" ]; then
+    find ${CASE_DIR} -maxdepth 2 -type d -name 'avg_lead*' -prune -exec rm -rf {} +
+    echo "Removed old avg_ plot folders"
 fi
 
 python ${PACKAGEROOT}/src/plot.py ${INIT} ${LEAD} --members ${PLOT_MEMBERS} --domains ${PLOT_DOMAINS} \\

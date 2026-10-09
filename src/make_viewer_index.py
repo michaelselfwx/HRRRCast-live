@@ -51,8 +51,8 @@ def member_id(raw: str) -> str:
 
 
 def member_sort_key(m: str):
-    # viewer order: operational HRRR (reference), LPMM, members m00.., then PMM/mean and spread
-    special = {"hrrr": (-2, 0), "lpmm": (-1, 0), "avg": (1, 0), "spr": (1, 1)}
+    # viewer order: operational HRRR (reference), members m00.., PMM/mean, LPMM, spread last
+    special = {"hrrr": (-1, 0), "avg": (1, 0), "lpmm": (1, 1), "spr": (1, 2)}
     if m in special:
         return special[m]
     if m.startswith("m"):
