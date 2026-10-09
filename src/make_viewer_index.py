@@ -11,6 +11,12 @@ Usage:
     python src/make_viewer_index.py                 # base_dir = ./
     python src/make_viewer_index.py --base_dir /data/hrrrcast
 Then open viewer.html (double-click works) or run `python -m http.server` in base_dir.
+
+Images hosted somewhere else (viewer page in one web folder, plots at another public URL):
+    python src/make_viewer_index.py --base_dir /data/hrrrcast \
+        --image_base_url https://example.edu/hrrrcast-plots/ --output_dir /var/www/html/viewer
+--base_dir is a local copy of the plot folders (only scanned, to list what exists); the
+viewer loads every image from <image_base_url>/YYYYMMDD/HH/... instead of next to viewer.html.
 """
 
 import argparse
@@ -130,8 +136,18 @@ def main():
     ap.add_argument("--products", nargs="+", default=None,
                     help="Only list these products in the viewer (names or wildcards, same as plot.py). "
                          "Default: $HRRRCAST_PLOT_PRODUCTS if set, else everything found")
+    ap.add_argument("--image_base_url", default="https://hdwx.tamu.edu/products/wxgen3/HRRRCast/",
+                    help="Public URL the YYYYMMDD/HH plot folders are served from, e.g. "
+                         "https://example.edu/hrrrcast/ (default: images next to viewer.html)")
+    ap.add_argument("--output_dir", default=None,
+                    help="Where to write viewer.html + viewer_manifest.js (default: --base_dir)")
     args = ap.parse_args()
     base = Path(args.base_dir).resolve()
+    out = Path(args.output_dir).resolve() if args.output_dir else base
+    out.mkdir(parents=True, exist_ok=True)
+    image_base = args.image_base_url.strip()
+    if image_base and not image_base.endswith("/"):
+        image_base += "/"
     raw = args.products or os.environ.get("HRRRCAST_PLOT_PRODUCTS", "").split()
     products = [p for v in raw for p in v.replace(",", " ").split()] or None
 
@@ -140,21 +156,24 @@ def main():
         print(f"No plot folders found under {base} (expected YYYYMMDD/HH/<member>_leadNNh/*.png)")
         sys.exit(1)
 
-    manifest = {"generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), "cases": cases}
-    (base / "viewer_manifest.js").write_text(
+    manifest = {"generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                "image_base": image_base, "cases": cases}
+    (out / "viewer_manifest.js").write_text(
         "window.HRRRCAST_MANIFEST = " + json.dumps(manifest, separators=(",", ":")) + ";\n"
     )
     template = Path(__file__).with_name("viewer_template.html")
-    shutil.copyfile(template, base / "viewer.html")
+    shutil.copyfile(template, out / "viewer.html")
 
     n_img = sum(len(ls) for c in cases.values() for dm in c["domains"].values()
                 for p in dm["products"].values() for ls in p.values())
-    print(f"Indexed {len(cases)} case(s), {n_img} images -> {base / 'viewer_manifest.js'}")
+    print(f"Indexed {len(cases)} case(s), {n_img} images -> {out / 'viewer_manifest.js'}")
+    if image_base:
+        print(f"Images will load from {image_base}YYYYMMDD/HH/...")
     for k, c in cases.items():
         for name, dm in c["domains"].items():
             print(f"  {k} [{name}]: members {', '.join(dm['members'])}; "
                   f"leads f{dm['leads'][0]:02d}-f{dm['leads'][-1]:02d}; {len(dm['products'])} products")
-    print(f"Open {base / 'viewer.html'}  (or: cd {base} && python -m http.server, then http://localhost:8000/viewer.html)")
+    print(f"Open {out / 'viewer.html'}  (or: cd {out} && python -m http.server, then http://localhost:8000/viewer.html)")
 
 
 if __name__ == "__main__":

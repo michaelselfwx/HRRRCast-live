@@ -149,7 +149,7 @@ function fieldsOf(c){
 function productKey(){ return S.level === "" ? S.field : S.level === "surface" ? S.field+"_surface" : `${S.field}_${S.level}hPa`; }
 function imgPath(mem, lead){
   const c = caseObj(), d = c.memdirs[mem];
-  return `${S.case}/${c.prefix || ""}${d}_lead${pad2(lead)}h/${productKey()}_lead${pad2(lead)}h.png`;
+  return `${M.image_base || ""}${S.case}/${c.prefix || ""}${d}_lead${pad2(lead)}h/${productKey()}_lead${pad2(lead)}h.png`;
 }
 function hasImg(mem, lead){
   const p = caseObj().products[productKey()]; return !!(p && p[mem] && p[mem].includes(lead));
