@@ -47,7 +47,9 @@ fi
 
 echo "In plot, init_time=${INIT_TIME}, lead_hour=${LEAD_HOUR}, TASK_ID=${TASK_ID}, MEMBER_RANGE=${MEMBER_RANGE}"
 
-python3 ${PACKAGEROOT}/src/plot.py ${INIT_TIME} ${LEAD_HOUR} --members ${MEMBER_RANGE} --products REFC "APCP*" CAPE T2M WIND_10M MSLMA HLCY_0_3km HGT_500hPa --forecast_dir ${DATAROOT} --output_dir ${DATAROOT}
+# plot domains: tx = full forecast grid, hcfcd = Harris County box (YYYYMMDD/HH/hcfcd/)
+PLOT_DOMAINS=${HRRRCAST_PLOT_DOMAINS:-tx hcfcd}
+python3 ${PACKAGEROOT}/src/plot.py ${INIT_TIME} ${LEAD_HOUR} --members ${MEMBER_RANGE} --domains ${PLOT_DOMAINS} --products REFC "APCP*" CAPE T2M WIND_10M MSLMA HLCY_0_3km HGT_500hPa --forecast_dir ${DATAROOT} --output_dir ${DATAROOT}
 
 # refresh the HTML viewer (viewer.html + viewer_manifest.js in DATAROOT)
 python3 ${PACKAGEROOT}/src/make_viewer_index.py --base_dir ${DATAROOT} || true

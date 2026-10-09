@@ -58,6 +58,7 @@ footer{position:fixed;left:0;right:0;bottom:0;z-index:5;background:var(--panel);
 <header>
   <h1>HRRRCast</h1>
   <div class="ctl"><label for="case">Init</label><select id="case"></select></div>
+  <div class="ctl" id="domainWrap"><label for="domain">Domain</label><select id="domain"></select></div>
   <div class="ctl"><label for="field">Product</label><select id="field"></select></div>
   <div class="ctl" id="levelWrap"><label for="level">Level</label><select id="level"></select></div>
   <div class="ctl"><label>Members</label><div class="chips" id="members"></div>
@@ -126,7 +127,7 @@ if (!M || !M.cases || !Object.keys(M.cases).length){
 }
 
 // ---------- state ----------
-const S = {case:null, field:null, level:null, members:new Set(), idx:0, cols:"auto", focus:null, playing:false};
+const S = {case:null, domain:"tx", field:null, level:null, members:new Set(), idx:0, cols:"auto", focus:null, playing:false};
 let timer = null, leads = [], cache = {};
 
 function splitProduct(p){
@@ -134,7 +135,11 @@ function splitProduct(p){
   m = p.match(/^(.*)_surface$/); if (m) return [m[1], "surface"];
   return [p, ""];
 }
-function caseObj(){ return M.cases[S.case]; }
+// manifest: cases[case].domains[domain] = {members, memdirs, leads, products, prefix}
+// (older manifests have no "domains": the case object itself is the single domain)
+const DOMAIN_NAMES = {tx:"TX", hcfcd:"HCFCD (Harris Co.)"};
+const domainsOf = k => M.cases[k].domains || {tx: M.cases[k]};
+function caseObj(){ const d = domainsOf(S.case); return d[S.domain] || d[Object.keys(d)[0]]; }
 function fieldsOf(c){
   const f = {};
   for (const p of Object.keys(c.products)){ const [v,l] = splitProduct(p); (f[v] ||= []).push(l); }
@@ -144,7 +149,7 @@ function fieldsOf(c){
 function productKey(){ return S.level === "" ? S.field : S.level === "surface" ? S.field+"_surface" : `${S.field}_${S.level}hPa`; }
 function imgPath(mem, lead){
   const c = caseObj(), d = c.memdirs[mem];
-  return `${S.case}/${d}_lead${pad2(lead)}h/${productKey()}_lead${pad2(lead)}h.png`;
+  return `${S.case}/${c.prefix || ""}${d}_lead${pad2(lead)}h/${productKey()}_lead${pad2(lead)}h.png`;
 }
 function hasImg(mem, lead){
   const p = caseObj().products[productKey()]; return !!(p && p[mem] && p[mem].includes(lead));
@@ -158,6 +163,14 @@ function fillCases(){
     const [d,h] = k.split("/");
     sel.add(new Option(`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6)} ${h}Z`, k));
   }
+}
+function fillDomains(){
+  const doms = Object.keys(domainsOf(S.case)), sel = $("domain"); sel.innerHTML = "";
+  doms.sort((a,b) => (a==="tx" ? -1 : b==="tx" ? 1 : a.localeCompare(b)));
+  for (const d of doms) sel.add(new Option(DOMAIN_NAMES[d] || d.toUpperCase(), d));
+  if (!doms.includes(S.domain)) S.domain = doms[0];
+  sel.value = S.domain;
+  $("domainWrap").style.display = doms.length > 1 ? "" : "none";
 }
 function fillFields(){
   const f = fieldsOf(caseObj()), sel = $("field"); sel.innerHTML = "";
@@ -281,13 +294,14 @@ function play(on){
 
 // ---------- URL state ----------
 function writeHash(){
-  const q = new URLSearchParams({c:S.case, p:S.field, l:S.level, m:[...S.members].join(","), f:leads[S.idx] ?? "", cols:S.cols});
+  const q = new URLSearchParams({c:S.case, d:S.domain, p:S.field, l:S.level, m:[...S.members].join(","), f:leads[S.idx] ?? "", cols:S.cols});
   if (S.focus) q.set("z", S.focus);
   history.replaceState(null, "", "#" + q.toString());
 }
 function readHash(){
   const q = new URLSearchParams(location.hash.slice(1));
   if (q.get("c") && M.cases[q.get("c")]) S.case = q.get("c");
+  if (q.get("d")) S.domain = q.get("d");
   if (q.has("p")) S.field = q.get("p");
   if (q.has("l")) S.level = q.get("l");
   if (q.get("m")) S.members = new Set(q.get("m").split(","));
@@ -298,10 +312,11 @@ function readHash(){
 
 // ---------- wiring ----------
 function refresh(rebuildFields){
-  if (rebuildFields){ fillFields(); }
+  if (rebuildFields){ fillDomains(); fillFields(); }
   fillLevels(); fillMembers(); computeLeads(); buildGrid(); draw(); preload(); writeHash();
 }
 $("case").onchange = e => { S.case = e.target.value; S.focus = null; refresh(true); };
+$("domain").onchange = e => { S.domain = e.target.value; S.focus = null; refresh(true); };
 $("field").onchange = e => { S.field = e.target.value; refresh(); };
 $("level").onchange = e => { S.level = e.target.value; refresh(); };
 $("cols").onchange = e => { S.cols = e.target.value; buildGrid(); draw(); writeHash(); };
@@ -331,7 +346,7 @@ fillCases();
 const startLead = readHash();
 S.case = S.case || $("case").options[0].value;
 $("case").value = S.case; $("cols").value = S.cols;
-fillFields(); fillLevels(); fillMembers(); computeLeads();
+fillDomains(); fillFields(); fillLevels(); fillMembers(); computeLeads();
 if (startLead !== null && leads.includes(startLead)) S.idx = leads.indexOf(startLead);
 buildGrid(); draw(); preload(); writeHash();
 })();

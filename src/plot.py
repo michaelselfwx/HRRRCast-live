@@ -145,6 +145,9 @@ class ForecastPlotterConfig:
         self.dpi = 300
         self.cmap_default = 'viridis'
         self.zoom_extent = None
+        self.domains = ["tx"]   # plot domains (see DOMAINS); --domains / HRRRCAST_PLOT_DOMAINS
+        self.outline = None     # (lons, lats) polygon drawn on the map (set per domain)
+        self.county_lw = 0.12
         self.products = None   # list of product patterns; None = plot everything
         # US county borders (Natural Earth 10m admin_2_counties; downloaded once by cartopy).
         # Turn off with --no-counties or HRRRCAST_PLOT_COUNTIES=0.
@@ -167,6 +170,10 @@ class ForecastPlotter:
         ax.add_feature(cfeature.COASTLINE, linewidth=0.5, zorder=3)
         ax.add_feature(cfeature.BORDERS, linewidth=0.5, zorder=3)
         ax.add_feature(cfeature.STATES, linewidth=0.3, zorder=3)
+        outline = getattr(self.config, "outline", None)
+        if outline:
+            ax.plot(outline[0], outline[1], color="black", linewidth=1.0, linestyle="--",
+                    transform=ccrs.PlateCarree(), zorder=4)
         if not getattr(self.config, "counties", False):
             return
         if ForecastPlotter._counties_feature is None:
@@ -180,7 +187,8 @@ class ForecastPlotter:
                 facecolor="none", edgecolor="0.45",
             )
         # thin grey lines under the state borders but above the filled field
-        ax.add_feature(ForecastPlotter._counties_feature, linewidth=0.12, zorder=2.5)
+        ax.add_feature(ForecastPlotter._counties_feature,
+                       linewidth=getattr(self.config, "county_lw", 0.12), zorder=2.5)
     
     def load_forecast_data(self, forecast_file: str) -> xr.Dataset:
         """Load forecast data from NetCDF file."""
@@ -541,6 +549,69 @@ class ForecastPlotter:
             logger.error(f"Error creating summary plot: {e}")
 
 
+# Plot domains. "tx" = the whole forecast grid (plots in YYYYMMDD/HH/<member>_leadNNh/);
+# any other domain is a sub-box of it, plotted into YYYYMMDD/HH/<domain>/<member>_leadNNh/.
+# Corners are (lat, lon) of HRRR grid points (SW, SE, NE, NW), so the box follows the grid.
+DOMAINS = {
+    "tx": None,
+    # Harris County Flood Control District box (HRRR grid corners; TSC ft in the comments)
+    "hcfcd": {
+        "label": "HCFCD",
+        "corners": [
+            (29.340298, -96.144918),   # SW  X 2,877,994.82  Y 13,682,372.01
+            (29.312892, -94.739308),   # SE  X 3,325,953.48  Y 13,686,035.04
+            (30.833933, -94.686062),   # NE  X 3,322,509.65  Y 14,239,458.32
+            (30.861971, -96.118770),   # NW  X 2,872,690.00  Y 14,235,821.99
+        ],
+        "pad": 3,             # extra grid points kept around the box so contours fill the frame
+        "county_lw": 0.5,     # county lines matter at this scale
+    },
+}
+
+
+def parse_domains(values) -> List[str]:
+    if not values:
+        return ["tx"]
+    if isinstance(values, str):
+        values = [values]
+    out = []
+    for v in values:
+        for d in v.replace(",", " ").lower().split():
+            if d not in DOMAINS:
+                raise ValueError(f"Unknown domain '{d}' (known: {', '.join(DOMAINS)})")
+            if d not in out:
+                out.append(d)
+    return out
+
+
+def domain_view(ds: xr.Dataset, name: str):
+    """(cropped dataset, map extent, outline) for a plot domain; (None, ...) if it's off-grid."""
+    spec = DOMAINS[name]
+    if spec is None:
+        return ds, None, None
+    lats = ds["latitude"].values
+    lons = ((ds["longitude"].values + 180.0) % 360.0) - 180.0
+    ys, xs = [], []
+    for la, lo in spec["corners"]:
+        d = (lats - la) ** 2 + ((lons - lo) * np.cos(np.deg2rad(la))) ** 2
+        y, x = np.unravel_index(np.argmin(d), d.shape)
+        if np.sqrt(d[y, x]) > 0.05:      # corner not inside this grid (~5 km tolerance)
+            return None, None, None
+        ys.append(y); xs.append(x)
+    pad = spec.get("pad", 3)
+    ny, nx = lats.shape
+    y0, y1 = max(0, min(ys) - pad), min(ny, max(ys) + pad + 1)
+    x0, x1 = max(0, min(xs) - pad), min(nx, max(xs) + pad + 1)
+    ydim, xdim = ds["latitude"].dims
+    sub = ds.isel({ydim: slice(y0, y1), xdim: slice(x0, x1)})
+    clat = [c[0] for c in spec["corners"]]
+    clon = [c[1] for c in spec["corners"]]
+    m = 0.02
+    extent = (min(clon) - m, max(clon) + m, min(clat) - m, max(clat) + m)
+    outline = (clon + clon[:1], clat + clat[:1])
+    return sub, extent, outline
+
+
 def crop_like_members(ds, ds_path):
     """Show the operational HRRR on the same domain as the HRRRCast members, even if its file
     holds a bigger grid (get_hrrr_fcst.py ran before the HRRRCast output existed)."""
@@ -562,40 +633,58 @@ def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, i
     if member == "hrrr":
         config.run_label = "HRRR "
     plotter = ForecastPlotter(config)
+    base_zoom, base_county_lw = config.zoom_extent, config.county_lw
     ds = xr.open_dataset(ds_path, decode_timedelta=True)
     if member == "hrrr":
         ds = crop_like_members(ds, ds_path)
+    # accumulated precipitation from derived_precip.py, if it has been run
+    precip_path = ds_path.replace(f"_f{h:02d}.nc", f"_precip_f{h:02d}.nc")
+    dsp = None
+    if member != "lpmm" and os.path.exists(precip_path):
+        dsp = xr.open_dataset(precip_path, decode_timedelta=True)
+        if member == "hrrr":
+            dsp = crop_like_members(dsp, ds_path)
     try:
-        valid_datetime = init_datetime + timedelta(hours=h)
         timestamp_str = f"{init_year}-{init_month}-{init_day} {init_hh}:00 UTC"
-        output_subdir = f"{output_dir}/{date_str}/{member}_lead{h:02d}h"  # member is m00 / avg / spr / lpmm / hrrr
-        utils.make_directory(output_subdir)
-        if member == "lpmm":
-            # LPMM file only holds the precipitation products
-            plotter.plot_derived_precip(ds, h, output_subdir, timestamp_str, label=" (local PMM)")
-        else:
-            plotter.plot_pressure_level_variables(ds, h, output_subdir, timestamp_str)
-            plotter.plot_surface_variables(ds, h, output_subdir, timestamp_str)
-            if product_wanted("summary", config.products):
-                plotter.create_summary_plot(ds, h, output_subdir, timestamp_str)
-            # accumulated precipitation from derived_precip.py, if it has been run
-            precip_path = ds_path.replace(f"_f{h:02d}.nc", f"_precip_f{h:02d}.nc")
-            if os.path.exists(precip_path):
-                with xr.open_dataset(precip_path, decode_timedelta=True) as dsp:
-                    if member == "hrrr":
-                        dsp = crop_like_members(dsp, ds_path)
-                    label = " (PMM)" if member == "avg" else ""
-                    plotter.plot_derived_precip(dsp, h, output_subdir, timestamp_str, label=label)
-        logging.info(f"Plots for lead hour {h} saved to: {output_subdir}")
+        for dom in (config.domains or ["tx"]):
+            dsd, extent, outline = domain_view(ds, dom)
+            if dsd is None:
+                logging.warning(f"Domain {dom} is not inside {os.path.basename(ds_path)}; skipped")
+                continue
+            spec = DOMAINS[dom] or {}
+            config.zoom_extent = extent if extent else base_zoom
+            config.outline = outline
+            config.county_lw = spec.get("county_lw", base_county_lw)
+            # member is m00 / avg / spr / lpmm / hrrr; non-default domains get their own folder
+            sub = "" if dom == "tx" else f"{dom}/"
+            output_subdir = f"{output_dir}/{date_str}/{sub}{member}_lead{h:02d}h"
+            utils.make_directory(output_subdir)
+            if member == "lpmm":
+                # LPMM file only holds the precipitation products
+                plotter.plot_derived_precip(dsd, h, output_subdir, timestamp_str, label=" (local PMM)")
+            else:
+                plotter.plot_pressure_level_variables(dsd, h, output_subdir, timestamp_str)
+                plotter.plot_surface_variables(dsd, h, output_subdir, timestamp_str)
+                if product_wanted("summary", config.products):
+                    plotter.create_summary_plot(dsd, h, output_subdir, timestamp_str)
+                if dsp is not None:
+                    dspd = domain_view(dsp, dom)[0]
+                    if dspd is not None:
+                        label = " (PMM)" if member == "avg" else ""
+                        plotter.plot_derived_precip(dspd, h, output_subdir, timestamp_str, label=label)
+            logging.info(f"Plots for lead hour {h} ({dom}) saved to: {output_subdir}")
     finally:
         ds.close()
+        if dsp is not None:
+            dsp.close()
 
 def plot_forecast_data(datetime_str: str,
                       lead_hour: str, member: str,
                       zoom_extent: Optional[tuple] = None,
                       forecast_dir: str = "./", output_dir: str = "./",
                       products: Optional[List[str]] = None,
-                      counties: Optional[bool] = None):
+                      counties: Optional[bool] = None,
+                      domains: Optional[List[str]] = None):
     """Main plotting function. Plots all hours from 1 to lead_hour (inclusive) in parallel."""
     try:
         # Validate inputs
@@ -614,6 +703,7 @@ def plot_forecast_data(datetime_str: str,
         config = ForecastPlotterConfig()
         config.zoom_extent = zoom_extent
         config.products = products
+        config.domains = domains or ["tx"]
         if counties is not None:
             config.counties = counties
         if config.counties:
@@ -678,6 +768,9 @@ def parse_arguments():
         metavar=("LON_MIN", "LON_MAX"),
         help="Longitude zoom bounds for map extent (e.g., --lon-range 259 272)",
     )
+    parser.add_argument("--domains", nargs="+", default=None,
+                        help=f"Plot domains: {', '.join(DOMAINS)} (default: $HRRRCAST_PLOT_DOMAINS, else tx). "
+                             "tx = the full forecast grid; others go in YYYYMMDD/HH/<domain>/")
     parser.add_argument("--no-counties", dest="counties", action="store_false", default=None,
                         help="Do not draw county borders (default: drawn; or set HRRRCAST_PLOT_COUNTIES=0)")
     parser.add_argument("--products", nargs="+", default=None,
@@ -728,6 +821,12 @@ def main():
 
         products = parse_product_patterns(args.products or os.environ.get("HRRRCAST_PLOT_PRODUCTS"))
         logger.info(f"Products: {' '.join(products) if products else 'all'}")
+        try:
+            domains = parse_domains(args.domains or os.environ.get("HRRRCAST_PLOT_DOMAINS"))
+        except ValueError as e:
+            logger.error(str(e))
+            sys.exit(1)
+        logger.info(f"Domains: {' '.join(domains)}")
 
         for member in members:
             plot_forecast_data(
@@ -739,6 +838,7 @@ def main():
                 output_dir=args.output_dir,
                 products=products,
                 counties=args.counties,
+                domains=domains,
             )
     except Exception as e:
         logger.error(f"Application failed: {e}")

@@ -2,7 +2,8 @@
 """
 Build the HRRRCast forecast viewer.
 
-Scans plot.py output (<base_dir>/YYYYMMDD/HH/<member>_leadNNh/<PRODUCT>_leadNNh.png),
+Scans plot.py output (<base_dir>/YYYYMMDD/HH/<member>_leadNNh/<PRODUCT>_leadNNh.png, and
+<base_dir>/YYYYMMDD/HH/<domain>/<member>_leadNNh/... for extra plot domains such as hcfcd),
 writes <base_dir>/viewer_manifest.js describing what exists, and copies the viewer page
 to <base_dir>/viewer.html.
 
@@ -57,47 +58,67 @@ def member_sort_key(m: str):
     return (1, {"avg": 0, "lpmm": 1, "spr": 2}.get(m, 9))
 
 
+DOMAIN_RE = re.compile(r"^[a-z][a-z0-9_]*$")   # plot.py --domains subfolders, e.g. hcfcd/
+DEFAULT_DOMAIN = "tx"                          # plots directly in YYYYMMDD/HH/
+
+
+def scan_dir(folder: Path, products=None) -> dict:
+    """Members / leads / products of the <member>_leadNNh folders directly inside folder."""
+    # (member, folder prefix) -> {product: {leads}}; one member can appear under several
+    # prefixes (e.g. old "mem0_" and newer "memm00_" folders), so keep the fullest one.
+    found = {}
+    for d in folder.iterdir():
+        m = MEMDIR_RE.match(d.name) if d.is_dir() else None
+        if not m:
+            continue
+        mem, lead = member_id(m.group(1)), int(m.group(2))
+        prefix = d.name[: d.name.rindex("_lead")]
+        prods = found.setdefault((mem, prefix), {})
+        for f in d.iterdir():
+            pm = PNG_RE.match(f.name)
+            if pm and product_wanted(pm.group(1), products):
+                prods.setdefault(pm.group(1), set()).add(lead)
+    members, case_prods, leads = {}, {}, set()
+    best = {}
+    for (mem, prefix), prods in found.items():
+        n = sum(len(v) for v in prods.values())
+        if n and (mem not in best or n > best[mem][0]):
+            best[mem] = (n, prefix)
+    for mem, (_, prefix) in best.items():
+        members[mem] = prefix
+        for prod, ls in found[(mem, prefix)].items():
+            case_prods.setdefault(prod, {})[mem] = ls
+            leads |= ls
+    if not case_prods:
+        return {}
+    return {
+        "members": sorted(members, key=member_sort_key),
+        "memdirs": members,
+        "leads": sorted(leads),
+        "products": {
+            p: {mem: sorted(ls) for mem, ls in sorted(v.items(), key=lambda kv: member_sort_key(kv[0]))}
+            for p, v in sorted(case_prods.items())
+        },
+    }
+
+
 def scan(base: Path, products=None) -> dict:
+    """{case: {"domains": {domain: {..., "prefix": subfolder}}}}"""
     cases = {}
     for day in sorted(p for p in base.iterdir() if p.is_dir() and CASE_RE.match(p.name)):
         for hh in sorted(p for p in day.iterdir() if p.is_dir() and HOUR_RE.match(p.name)):
-            case_key = f"{day.name}/{hh.name}"
-            # (member, folder prefix) -> {product: {leads}}; one member can appear under several
-            # prefixes (e.g. old "mem0_" and newer "memm00_" folders), so keep the fullest one.
-            found = {}
-            for d in hh.iterdir():
-                m = MEMDIR_RE.match(d.name) if d.is_dir() else None
-                if not m:
+            domains = {}
+            top = scan_dir(hh, products)
+            if top:
+                domains[DEFAULT_DOMAIN] = {**top, "prefix": ""}
+            for sub in sorted(p for p in hh.iterdir() if p.is_dir() and DOMAIN_RE.match(p.name)):
+                if MEMDIR_RE.match(sub.name):
                     continue
-                mem, lead = member_id(m.group(1)), int(m.group(2))
-                prefix = d.name[: d.name.rindex("_lead")]
-                prods = found.setdefault((mem, prefix), {})
-                for f in d.iterdir():
-                    pm = PNG_RE.match(f.name)
-                    if pm and product_wanted(pm.group(1), products):
-                        prods.setdefault(pm.group(1), set()).add(lead)
-            members, case_prods, leads = {}, {}, set()
-            best = {}
-            for (mem, prefix), prods in found.items():
-                n = sum(len(v) for v in prods.values())
-                if n and (mem not in best or n > best[mem][0]):
-                    best[mem] = (n, prefix)
-            for mem, (_, prefix) in best.items():
-                members[mem] = prefix
-                for prod, ls in found[(mem, prefix)].items():
-                    case_prods.setdefault(prod, {})[mem] = ls
-                    leads |= ls
-            if not case_prods:
-                continue
-            cases[case_key] = {
-                "members": sorted(members, key=member_sort_key),
-                "memdirs": members,
-                "leads": sorted(leads),
-                "products": {
-                    p: {mem: sorted(ls) for mem, ls in sorted(v.items(), key=lambda kv: member_sort_key(kv[0]))}
-                    for p, v in sorted(case_prods.items())
-                },
-            }
+                info = scan_dir(sub, products)
+                if info:
+                    domains[sub.name] = {**info, "prefix": sub.name + "/"}
+            if domains:
+                cases[f"{day.name}/{hh.name}"] = {"domains": domains}
     return cases
 
 
@@ -124,11 +145,13 @@ def main():
     template = Path(__file__).with_name("viewer_template.html")
     shutil.copyfile(template, base / "viewer.html")
 
-    n_img = sum(len(ls) for c in cases.values() for p in c["products"].values() for ls in p.values())
+    n_img = sum(len(ls) for c in cases.values() for dm in c["domains"].values()
+                for p in dm["products"].values() for ls in p.values())
     print(f"Indexed {len(cases)} case(s), {n_img} images -> {base / 'viewer_manifest.js'}")
     for k, c in cases.items():
-        print(f"  {k}: members {', '.join(c['members'])}; leads f{c['leads'][0]:02d}-f{c['leads'][-1]:02d}; "
-              f"{len(c['products'])} products")
+        for name, dm in c["domains"].items():
+            print(f"  {k} [{name}]: members {', '.join(dm['members'])}; "
+                  f"leads f{dm['leads'][0]:02d}-f{dm['leads'][-1]:02d}; {len(dm['products'])} products")
     print(f"Open {base / 'viewer.html'}  (or: cd {base} && python -m http.server, then http://localhost:8000/viewer.html)")
 
 
