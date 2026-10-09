@@ -132,11 +132,10 @@ def run(inittime: str, lead_hours: int, forecast_dir: str, patch: int, halo: int
     totals = {m: [np.zeros(0, np.float32)] for m in members + refs}   # cumulative totals; index = hour
     keep = max(WINDOWS.values())
     for h in range(1, lead_hours + 1):
-        # ensemble members must all be present; a reference run that ends early is just dropped
-        if members and not all(os.path.exists(os.path.join(case_dir, f"hrrrcast_{m}_f{h:02d}.nc"))
-                               for m in members):
-            logger.warning(f"Missing member files for f{h:02d}; ensemble products stop at f{h - 1:02d}")
-            members = []
+        # a member (or the HRRR) whose files stop early is dropped from this hour on
+        for m in [m for m in members if not os.path.exists(os.path.join(case_dir, f"hrrrcast_{m}_f{h:02d}.nc"))]:
+            logger.warning(f"Missing hrrrcast_{m}_f{h:02d}.nc; dropping {m} from f{h:02d} on")
+            members.remove(m)
         for r in list(refs):
             if not os.path.exists(os.path.join(case_dir, f"hrrrcast_{r}_f{h:02d}.nc")):
                 logger.warning(f"Missing hrrrcast_{r}_f{h:02d}.nc; {r} products stop at f{h - 1:02d}")

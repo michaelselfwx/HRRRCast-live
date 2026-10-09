@@ -283,6 +283,18 @@ def wait_for_hour_files(date_str: str,
             logger.info(f"Files present for hour f{hour:02d} but not yet stable (age < {min_age_seconds}s). Sleeping {poll_seconds}s...")
             time.sleep(poll_seconds)
 
+def available_hour_files(date_str: str, forecast_dir: str, hour: int, n_ensembles: int) -> List[str]:
+    """Member files that exist for this hour (no waiting). Missing members are skipped."""
+    date_dir = os.path.join(forecast_dir, date_str)
+    files, missing = [], []
+    for m in range(n_ensembles):
+        fp = os.path.join(date_dir, f"hrrrcast_m{m:02d}_f{hour:02d}.nc")
+        (files if os.path.exists(fp) else missing).append(fp if os.path.exists(fp) else f"m{m:02d}")
+    if missing:
+        logger.warning(f"f{hour:02d}: missing members {', '.join(missing)}; using {len(files)} of {n_ensembles}")
+    return files
+
+
 def load_hour_ensemble_data(files: List[str]) -> xr.Dataset:
     """Load per-hour ensemble files and concatenate along member dimension."""
     datasets = []
@@ -301,7 +313,8 @@ def compute_ensemble_pmm(datetime_str: str,
                         forecast_dir: str = "./", 
                         output_dir: str = "./",
                         method: int = 2,
-                        n_ensembles: Optional[int] = None):
+                        n_ensembles: Optional[int] = None,
+                        wait: bool = True):
     """Main ensemble post-processing function: loop hours 1..lead_hour and write per-hour outputs."""
     try:
         # Validate inputs
@@ -324,13 +337,23 @@ def compute_ensemble_pmm(datetime_str: str,
         for h in range(0, int(lead_hour) + 1):
             # Wait until files are present and stable before processing this hour
             # Hour 0: wait indefinitely; subsequent hours: max timeout_seconds
-            timeout = None if h == 0 else timeout_seconds
-            try:
-                files = wait_for_hour_files(date_str, forecast_dir, h, n_ensembles, poll_seconds, min_age_seconds, timeout_seconds=timeout)
-            except TimeoutError as e:
-                logger.error(f"Files not found for hour f{h:02d}: {e}")
-                logger.error("Forecast job appears to be dead or has failed. Exiting PMM computation.")
-                sys.exit(1)
+            if not wait:
+                # run after the forecasts have finished: use whatever members exist
+                files = available_hour_files(date_str, forecast_dir, h, n_ensembles)
+                if len(files) < 2:
+                    if h == 0:
+                        logger.warning(f"f00: only {len(files)} member file(s); skipping f00")
+                        continue
+                    logger.error(f"f{h:02d}: only {len(files)} member file(s); stopping PMM at f{h - 1:02d}")
+                    break
+            else:
+                timeout = None if h == 0 else timeout_seconds
+                try:
+                    files = wait_for_hour_files(date_str, forecast_dir, h, n_ensembles, poll_seconds, min_age_seconds, timeout_seconds=timeout)
+                except TimeoutError as e:
+                    logger.error(f"Files not found for hour f{h:02d}: {e}")
+                    logger.error("Forecast job appears to be dead or has failed. Exiting PMM computation.")
+                    sys.exit(1)
             logger.info(f"Processing forecast hour f{h:02d} with {len(files)} member files")
 
             # Load per-hour ensemble
@@ -457,6 +480,9 @@ def parse_arguments():
     parser.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                        help="Logging level")
     parser.add_argument("--n_ensembles", type=int, default=None, help="Number of ensemble members (fallback to N_ENSEMBLES env)")
+    parser.add_argument("--no_wait", action="store_true",
+                        help="Don't poll for files (use after the forecast jobs have ended): "
+                             "each hour uses the members that exist, skipping missing ones")
     return parser.parse_args()
 
 def main():
@@ -474,7 +500,8 @@ def main():
             forecast_dir=args.forecast_dir,
             output_dir=args.output_dir,
             method=args.method,
-            n_ensembles=args.n_ensembles
+            n_ensembles=args.n_ensembles,
+            wait=not args.no_wait,
         )
         
     except Exception as e:

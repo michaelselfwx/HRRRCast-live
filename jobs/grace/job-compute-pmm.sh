@@ -22,4 +22,4 @@ export WGRIB2=@[WGRIB2]
 source ${PACKAGEROOT}/etc/env_grace.sh
 
 echo "In compute_pmm, init_time=${INIT_TIME}, lead_hour=${LEAD_HOUR}, n_ensembles=${N_ENSEMBLES}"
-python ${PACKAGEROOT}/src/compute_pmm.py ${INIT_TIME} ${LEAD_HOUR} --forecast_dir ${DATAROOT} --output_dir ${DATAROOT} --n_ensembles ${N_ENSEMBLES}
+python ${PACKAGEROOT}/src/compute_pmm.py ${INIT_TIME} ${LEAD_HOUR} --forecast_dir ${DATAROOT} --output_dir ${DATAROOT} --n_ensembles ${N_ENSEMBLES} --no_wait

@@ -45,12 +45,12 @@ CPU_TASKS=$(( LEAD_HOUR < 48 ? LEAD_HOUR : 48 ))
 hr=$(echo "$INIT_TIME" | grep -oP '\d{2}$')
 if [[ "$hr" =~ ^(00|06|12|18)$ ]]; then
     FCST_WALLTIME=${FCST_WALLTIME:-"06:00:00"}
-    PMM_WALLTIME=${PMM_WALLTIME:-"06:30:00"}
+    PMM_WALLTIME=${PMM_WALLTIME:-"01:30:00"}
     GET_BCS_WALLTIME=${GET_BCS_WALLTIME:-"01:00:00"}
     MAKE_BCS_WALLTIME=${MAKE_BCS_WALLTIME:-"01:30:00"}
 else
     FCST_WALLTIME=${FCST_WALLTIME:-"03:00:00"}
-    PMM_WALLTIME=${PMM_WALLTIME:-"03:30:00"}
+    PMM_WALLTIME=${PMM_WALLTIME:-"01:00:00"}
     GET_BCS_WALLTIME=${GET_BCS_WALLTIME:-"00:30:00"}
     MAKE_BCS_WALLTIME=${MAKE_BCS_WALLTIME:-"01:00:00"}
 fi
@@ -107,13 +107,16 @@ ARRAY_SPEC="0-$((N_GPUS-1))"
 jobid5=$(sb --dependency=afterok:$jobid3:$jobid4 --array=$ARRAY_SPEC logs/job-fcst.sh) || exit 1
 echo "Submitted forecast array: $jobid5"
 last_jobid=$jobid5
+# Everything downstream waits for ALL forecast tasks to end (afterany): a failed member then
+# just drops out instead of leaving these jobs pending forever (afterok) or polling (after).
+FCST_DONE="afterany:$jobid5"
 
 # operational HRRR forecast of the same cycle, cropped to the HRRRCast grid (member "hrrr")
-DERIVED_DEP="afterok:$jobid5"
+DERIVED_DEP="$FCST_DONE"
 if [ "$RUNHRRR" == "YES" ]; then
     atparse < $JOBDIR/job-get-hrrr-fcst.sh > logs/job-get-hrrr-fcst.sh
-    jobidH=$(sb --dependency=afterok:$jobid5 logs/job-get-hrrr-fcst.sh) || exit 1; echo "Submitted get_hrrr_fcst: $jobidH"
-    DERIVED_DEP="afterok:$jobid5,afterany:$jobidH"   # derived precip runs even if HRRR fails
+    jobidH=$(sb --dependency=$FCST_DONE logs/job-get-hrrr-fcst.sh) || exit 1; echo "Submitted get_hrrr_fcst: $jobidH"
+    DERIVED_DEP="$FCST_DONE,afterany:$jobidH"   # derived precip runs even if HRRR fails
 fi
 
 # derived precip (run total, 6 h, 12 h, LPMM); needs every member finished
@@ -123,7 +126,7 @@ last_jobid=$jobidD
 
 if [ "$RUNPLOT" == "YES" ]; then
     atparse < $JOBDIR/job-plot.sh > logs/job-plot.sh
-    jobid6=$(sb --dependency=afterok:$jobid5:$jobidD --array=$ARRAY_SPEC logs/job-plot.sh) || exit 1
+    jobid6=$(sb --dependency=$FCST_DONE,afterok:$jobidD --array=$ARRAY_SPEC logs/job-plot.sh) || exit 1
     echo "Submitted plot array: $jobid6"
     last_jobid=$jobid6
     if [ "$RUNHRRR" == "YES" ]; then
@@ -134,7 +137,7 @@ fi
 
 if [ $N_ENSEMBLES -ge 2 ]; then
     atparse < $JOBDIR/job-compute-pmm.sh > logs/job-compute-pmm.sh
-    jobid7=$(sb --dependency=after:$jobid5 logs/job-compute-pmm.sh) || exit 1; echo "Submitted compute_pmm: $jobid7"
+    jobid7=$(sb --dependency=$FCST_DONE logs/job-compute-pmm.sh) || exit 1; echo "Submitted compute_pmm: $jobid7"
     last_jobid=$jobid7
     if [ "$RUNPLOT" == "YES" ]; then
         atparse PLOT_MEMBERS="avg spr lpmm" < $JOBDIR/job-plot.sh > logs/job-plot-pmm.sh
