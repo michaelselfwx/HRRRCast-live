@@ -51,11 +51,13 @@ def member_id(raw: str) -> str:
 
 
 def member_sort_key(m: str):
-    if m == "hrrr":
-        return (-1, 0)          # operational HRRR first, as the reference
+    # viewer order: operational HRRR (reference), LPMM, members m00.., then PMM/mean and spread
+    special = {"hrrr": (-2, 0), "lpmm": (-1, 0), "avg": (1, 0), "spr": (1, 1)}
+    if m in special:
+        return special[m]
     if m.startswith("m"):
         return (0, int(m[1:]))
-    return (1, {"avg": 0, "lpmm": 1, "spr": 2}.get(m, 9))
+    return (2, 0)
 
 
 DOMAIN_RE = re.compile(r"^[a-z][a-z0-9_]*$")   # plot.py --domains subfolders, e.g. hcfcd/
