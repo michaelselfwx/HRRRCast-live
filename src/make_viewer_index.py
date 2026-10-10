@@ -29,6 +29,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Public server the plot folders are published to: images load from
+# <IMAGE_BASE_URL>YYYYMMDD/HH/<member>_leadNNh/<PRODUCT>_leadNNh.png
+# Override with --image_base_url / $HRRRCAST_IMAGE_BASE_URL; --local loads them from next to viewer.html.
+IMAGE_BASE_URL = "https://hdwx.tamu.edu/products/wxgen3/HRRRCast/"
+
 CASE_RE = re.compile(r"^\d{8}$")
 HOUR_RE = re.compile(r"^\d{2}$")
 # member folder: m00 / memm00 (older plot.py) / mem0 / avg / memavg / spr ...  + _leadNNh
@@ -136,16 +141,17 @@ def main():
     ap.add_argument("--products", nargs="+", default=None,
                     help="Only list these products in the viewer (names or wildcards, same as plot.py). "
                          "Default: $HRRRCAST_PLOT_PRODUCTS if set, else everything found")
-    ap.add_argument("--image_base_url", default="https://hdwx.tamu.edu/products/wxgen3/HRRRCast/",
-                    help="Public URL the YYYYMMDD/HH plot folders are served from, e.g. "
-                         "https://example.edu/hrrrcast/ (default: images next to viewer.html)")
+    ap.add_argument("--image_base_url", default=os.environ.get("HRRRCAST_IMAGE_BASE_URL", IMAGE_BASE_URL),
+                    help=f"Public URL the YYYYMMDD/HH plot folders are served from (default: {IMAGE_BASE_URL})")
+    ap.add_argument("--local", action="store_true",
+                    help="Load images from next to viewer.html instead of the server (for viewing on your own computer)")
     ap.add_argument("--output_dir", default=None,
                     help="Where to write viewer.html + viewer_manifest.js (default: --base_dir)")
     args = ap.parse_args()
     base = Path(args.base_dir).resolve()
     out = Path(args.output_dir).resolve() if args.output_dir else base
     out.mkdir(parents=True, exist_ok=True)
-    image_base = args.image_base_url.strip()
+    image_base = "" if args.local else args.image_base_url.strip()
     if image_base and not image_base.endswith("/"):
         image_base += "/"
     raw = args.products or os.environ.get("HRRRCAST_PLOT_PRODUCTS", "").split()

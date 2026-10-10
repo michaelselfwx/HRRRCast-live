@@ -12,6 +12,8 @@
 #   4. plot.py            hrrr, m00..m(N-1), lpmm, spr on the tx and hcfcd domains
 #   5. make_viewer_index.py
 # The lead hours and member count are read from the hrrrcast_mNN_fHH.nc files in each case.
+# If those were deleted (cleanup job) but the hrrrcast.mNN.tHHz.pgrb2.fHH files are there, the
+# case is done HRRR-only: fetch, precip and plots for the operational HRRR, cropped to the same grid.
 #
 # Environment knobs (same names as submit_grace.sh where they overlap):
 #   DATAROOT           data root (default $SCRATCH/hrrrcast-data)
@@ -54,21 +56,33 @@ for INIT in "$@"; do
 
     # members = hrrrcast_mNN_f01.nc present; lead = last hour of m00 (or the first member found)
     MEMBERS=$(ls "$CASE_DIR"/hrrrcast_m[0-9][0-9]_f01.nc 2>/dev/null | sed -E 's/.*_m([0-9]+)_f01\.nc/\1/' | sort -n)
+    HRRR_ONLY=NO
     if [ -z "$MEMBERS" ]; then
-        echo "Skipping $INIT: no hrrrcast_mNN_f01.nc in $CASE_DIR (NetCDF deleted by cleanup?)" >&2; continue
+        # NetCDF deleted by the cleanup job: the GRIB2 output is still enough to crop the HRRR to
+        # the HRRRCast domain and to know the lead time, so do the HRRR (only) for this case
+        LEAD=$(ls "$CASE_DIR"/hrrrcast.m[0-9][0-9].t${HH}z.pgrb2.f[0-9]* 2>/dev/null | grep -E 'pgrb2\.f[0-9]+$' \
+               | sed -E 's/.*pgrb2\.f0*([0-9]+)$/\1/' | sort -n | tail -1)
+        if [ -z "$LEAD" ] || [ "$RUNHRRR" != "YES" ]; then
+            echo "Skipping $INIT: no hrrrcast_mNN_fHH.nc or hrrrcast.mNN.t${HH}z.pgrb2.fHH in $CASE_DIR" >&2; continue
+        fi
+        HRRR_ONLY=YES
+        N=0; MEMLIST=""; NMAX=0
+        echo "$INIT: no HRRRCast NetCDF (cleaned up?) -> HRRR only, f01-f$LEAD (crop taken from the GRIB2 output)"
+    else
+        N=$(echo "$MEMBERS" | wc -l)
+        FIRST=$(echo "$MEMBERS" | head -1)
+        LEAD=$(ls "$CASE_DIR"/hrrrcast_m${FIRST}_f[0-9][0-9]*.nc 2>/dev/null | grep -E '_f[0-9]+\.nc$' \
+               | sed -E 's/.*_f([0-9]+)\.nc/\1/' | sort -n | tail -1 | sed 's/^0*//')
+        MEMLIST=$(echo "$MEMBERS" | sed 's/^0*\([0-9]\)/\1/' | paste -sd' ')
+        NMAX=$(( 10#$(echo "$MEMBERS" | tail -1) + 1 ))     # compute_pmm looks for m00..m(NMAX-1)
     fi
-    N=$(echo "$MEMBERS" | wc -l)
-    FIRST=$(echo "$MEMBERS" | head -1)
-    LEAD=$(ls "$CASE_DIR"/hrrrcast_m${FIRST}_f[0-9][0-9]*.nc 2>/dev/null | grep -E '_f[0-9]+\.nc$' \
-           | sed -E 's/.*_f([0-9]+)\.nc/\1/' | sort -n | tail -1 | sed 's/^0*//')
-    MEMLIST=$(echo "$MEMBERS" | sed 's/^0*\([0-9]\)/\1/' | paste -sd' ')
-    NMAX=$(( 10#$(echo "$MEMBERS" | tail -1) + 1 ))     # compute_pmm looks for m00..m(NMAX-1)
     PLOT_MEMBERS="$MEMLIST"
     if (( N >= 2 )); then
         PLOT_MEMBERS="$PLOT_MEMBERS lpmm spr"
         [ "$PLOT_AVG" == "YES" ] && PLOT_MEMBERS="$PLOT_MEMBERS avg"
     fi
     [ "$RUNHRRR" == "YES" ] && PLOT_MEMBERS="hrrr $PLOT_MEMBERS"
+    PLOT_MEMBERS=$(echo $PLOT_MEMBERS)   # tidy spaces
 
     JOB="$DATAROOT/logs/job-replot-${YMD}${HH}.sh"
     cat > "$JOB" <<JOBEOF

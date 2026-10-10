@@ -191,19 +191,50 @@ def _wrap(lon):
     return ((np.asarray(lon) + 180.0) % 360.0) - 180.0
 
 
+REFERENCE_PATTERNS = (
+    # HRRRCast NetCDF output ...
+    "hrrrcast_m00_f01.nc", "hrrrcast_m*_f01.nc", "hrrrcast_m*_f[0-9]*.nc",
+    # ... or its GRIB2 output, which the cleanup job keeps when it deletes the NetCDF files
+    "hrrrcast.m00.t*z.pgrb2.f01", "hrrrcast.m*.t*z.pgrb2.f01", "hrrrcast.m*.t*z.pgrb2.f[0-9]*",
+    "hrrrcast.avg.t*z.pgrb2.f01",
+)
+
+
 def find_reference(case_dir: Path) -> Optional[Path]:
-    for pat in ("hrrrcast_m00_f01.nc", "hrrrcast_m*_f01.nc", "hrrrcast_m*_f*.nc"):
-        hits = sorted(glob.glob(str(case_dir / pat)))
+    """An HRRRCast output file of this case whose grid the HRRR is cropped to."""
+    for pat in REFERENCE_PATTERNS:
+        hits = sorted(h for h in glob.glob(str(case_dir / pat))
+                      if not h.endswith(".idx") and "_precip_" not in h)
         if hits:
             return Path(hits[0])
     return None
 
 
+_REF_CACHE: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+
+
+def reference_latlons(ref: Path) -> Tuple[np.ndarray, np.ndarray]:
+    """2-D (lat, lon) of a reference file: HRRRCast NetCDF or GRIB2 output."""
+    key = str(ref)
+    if key not in _REF_CACHE:
+        if ref.suffix == ".nc":
+            with xr.open_dataset(ref, decode_timedelta=True) as ds:
+                lat, lon = ds["latitude"].values, ds["longitude"].values
+        else:
+            import pygrib
+            g = pygrib.open(str(ref))
+            try:
+                lat, lon = g.message(1).latlons()
+            finally:
+                g.close()
+        _REF_CACHE[key] = (np.asarray(lat), np.asarray(lon))
+    return _REF_CACHE[key]
+
+
 def crop_from_reference(ref: Path, lats: np.ndarray, lons: np.ndarray) -> Tuple[int, int, int, int]:
     """Index window of the full grid that matches the reference file's lat/lon grid."""
-    with xr.open_dataset(ref, decode_timedelta=True) as ds:
-        rlat = ds["latitude"].values
-        rlon = _wrap(ds["longitude"].values)
+    rlat, rlon = reference_latlons(ref)
+    rlon = _wrap(rlon)
     ny, nx = rlat.shape
     flon = _wrap(lons)
     d = (lats - rlat[0, 0]) ** 2 + ((flon - rlon[0, 0]) * np.cos(np.deg2rad(rlat[0, 0]))) ** 2
@@ -219,8 +250,7 @@ def crop_from_reference(ref: Path, lats: np.ndarray, lons: np.ndarray) -> Tuple[
 
 def crop_dataset_to_reference(ds: xr.Dataset, ref: Path) -> xr.Dataset:
     """Crop a (larger) HRRR dataset to the reference file's grid; unchanged if already equal."""
-    with xr.open_dataset(ref, decode_timedelta=True) as r:
-        rshape = r["latitude"].shape
+    rshape = reference_latlons(ref)[0].shape
     if ds["latitude"].shape == rshape:
         return ds
     y0, y1, x0, x1 = crop_from_reference(ref, ds["latitude"].values, ds["longitude"].values)
@@ -232,8 +262,7 @@ def recrop_existing(case_dir: Path, ref: Path, init_dt) -> int:
     """Crop hrrrcast_hrrr_*.nc files written on a bigger grid (e.g. the full CONUS grid because
     the HRRRCast output was not there yet) to the HRRRCast domain, in place. No download."""
     from cf_attributes import get_cf_encoding
-    with xr.open_dataset(ref, decode_timedelta=True) as r:
-        rshape = r["latitude"].shape
+    rshape = reference_latlons(ref)[0].shape
     n = 0
     for f in sorted(case_dir.glob("hrrrcast_hrrr_*f[0-9][0-9].nc")):
         with xr.open_dataset(f, decode_timedelta=False) as ds:   # keep lead_time as written
@@ -384,7 +413,7 @@ def run(inittime: str, lead_hours: int, base_dir: str, start_hour: int = 1,
     elif not full:
         ref = find_reference(case_dir)
         if ref is None:
-            logger.warning(f"No hrrrcast_mNN_fHH.nc in {case_dir} to copy the crop from; "
+            logger.warning(f"No HRRRCast output (hrrrcast_mNN_fHH.nc or hrrrcast.mNN.tHHz.pgrb2.fHH) in {case_dir} to copy the crop from; "
                            "writing the full HRRR grid. Rerun this script after fcst.py (it then "
                            "crops the existing files without downloading again) or pass --subset.")
         else:
