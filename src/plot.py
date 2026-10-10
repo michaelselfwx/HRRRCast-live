@@ -114,6 +114,23 @@ def _normalize_range(range_values: Optional[List[float]], range_name: str) -> Op
     return (min(low, high), max(low, high))
 
 
+def save_png(fig, path: str, dpi: int, quantize: bool = True) -> None:
+    """Save a figure as a small PNG: rendered at `dpi`, then stored as an 8-bit palette image
+    (contour plots have few colours, so it looks the same at ~1/4 of the size)."""
+    if not quantize:
+        fig.savefig(path, dpi=dpi, bbox_inches='tight')
+        return
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches='tight')
+    buf.seek(0)
+    with Image.open(buf) as im:
+        im = im.convert("RGB").quantize(colors=256, method=Image.Quantize.MEDIANCUT,
+                                        dither=Image.Dither.NONE)
+        im.save(path, format="PNG", optimize=True)
+
+
 class ForecastPlotterConfig:
     """Configuration class for forecast plotting parameters."""
     
@@ -142,7 +159,10 @@ class ForecastPlotterConfig:
 
         # Plot settings
         self.figure_size = (12, 8)
-        self.dpi = 300
+        # 100 dpi -> ~1100 px wide, plenty for a browser (300 dpi made ~3300 px / ~1 MB files).
+        # Override with HRRRCAST_PLOT_DPI; HRRRCAST_PLOT_QUANTIZE=0 keeps full-colour PNGs.
+        self.dpi = int(os.environ.get("HRRRCAST_PLOT_DPI", "100"))
+        self.quantize = os.environ.get("HRRRCAST_PLOT_QUANTIZE", "1") not in ("0", "false", "no")
         self.cmap_default = 'viridis'
         self.zoom_extent = None
         self.domains = ["tx"]   # plot domains (see DOMAINS); --domains / HRRRCAST_PLOT_DOMAINS
@@ -248,7 +268,7 @@ class ForecastPlotter:
                 data = np.squeeze(ds[var_name].values)
                 fig = self.create_plot(data, lats, lons, var_name, None, title_suffix)
                 filename = f"{var_name}_surface_lead{lead_hour:02d}h.png"
-                fig.savefig(os.path.join(output_dir, filename), dpi=self.config.dpi, bbox_inches='tight')
+                save_png(fig, os.path.join(output_dir, filename), self.config.dpi, self.config.quantize)
                 plt.close(fig)
                 logger.info(f"Saved: {filename}")
             except Exception as e:
@@ -408,7 +428,7 @@ class ForecastPlotter:
                     # Save plot
                     filename = f"{var_name}_{level}hPa_lead{lead_hour:02d}h.png"
                     filepath = os.path.join(output_dir, filename)
-                    fig.savefig(filepath, dpi=self.config.dpi, bbox_inches='tight')
+                    save_png(fig, filepath, self.config.dpi, self.config.quantize)
                     plt.close(fig)
                     
                     logger.info(f"Saved: {filename}")
@@ -452,7 +472,7 @@ class ForecastPlotter:
                 # Save plot
                 filename = f"{var_name}_surface_lead{lead_hour:02d}h.png"
                 filepath = os.path.join(output_dir, filename)
-                fig.savefig(filepath, dpi=self.config.dpi, bbox_inches='tight')
+                save_png(fig, filepath, self.config.dpi, self.config.quantize)
                 plt.close(fig)
                 
                 logger.info(f"Saved: {filename}")
@@ -540,7 +560,7 @@ class ForecastPlotter:
             # Save summary plot
             filename = f"summary_lead{lead_hour:02d}h.png"
             filepath = os.path.join(output_dir, filename)
-            fig.savefig(filepath, dpi=self.config.dpi, bbox_inches='tight')
+            save_png(fig, filepath, self.config.dpi, self.config.quantize)
             plt.close(fig)
             
             logger.info(f"Saved: {filename}")
