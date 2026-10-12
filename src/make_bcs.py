@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import os
+import time
 import sys
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple
@@ -557,21 +558,23 @@ class GRIBPreprocessor:
         try:
             logger.info(f"Saving preprocessed data to {output_file}")
             
-            # Create model input arrays for all lead times
+            # One float32 array (lead_times, height, width, channels), filled in place: the model
+            # runs in float32 anyway, and this avoids a second full-size copy in memory.
             num_lead_times = pres_norm.shape[0]
-            model_inputs = []
-            
+            n_pl, n_sfc = pres_norm.shape[1], sfc_norm.shape[1]
+            height, width = pres_norm.shape[2], pres_norm.shape[3]
+            model_inputs = np.empty((num_lead_times, height, width, n_pl + n_sfc), dtype=np.float32)
             for lead_idx in range(num_lead_times):
-                # Concatenate pressure, surface
-                model_input = np.concatenate((pres_norm[lead_idx], sfc_norm[lead_idx]), axis=0)
-                model_input = np.transpose(model_input, (1, 2, 0))
-                model_inputs.append(model_input)
-            
-            # Stack all lead times
-            model_inputs = np.array(model_inputs)  # Shape: (lead_times, height, width, channels)
-            
-            # Save all data in compressed format
-            np.savez_compressed(
+                model_inputs[lead_idx, :, :, :n_pl] = np.moveaxis(pres_norm[lead_idx], 0, -1)
+                model_inputs[lead_idx, :, :, n_pl:] = np.moveaxis(sfc_norm[lead_idx], 0, -1)
+
+            # Uncompressed by default: zlib on ~10-30 GB of floats is single-threaded and took
+            # 15+ min for long leads, while the data barely compress. HRRRCAST_NPZ_COMPRESS=1
+            # restores the old compressed file (smaller on disk, much slower to write and read).
+            compress = os.environ.get("HRRRCAST_NPZ_COMPRESS", "0") not in ("0", "false", "no", "")
+            save = np.savez_compressed if compress else np.savez
+            t0 = time.time()
+            save(
                 output_file,
                 # Model input (ready for inference) - all lead times
                 model_input=model_inputs,
@@ -581,6 +584,8 @@ class GRIBPreprocessor:
                 # Metadata
                 **metadata
             )
+            logger.info(f"Wrote {model_inputs.nbytes / 1e9:.1f} GB ({'compressed' if compress else 'uncompressed'}) "
+                        f"in {time.time() - t0:.0f} s")
             
             logger.info(f"Preprocessed data saved successfully")
             logger.info(f"Model input shape: {model_inputs.shape}")
