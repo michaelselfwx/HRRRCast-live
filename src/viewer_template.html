@@ -116,7 +116,7 @@ const NAMES = {
   VGRD_0C:"V wind at 0 °C", WIND_0C:"Wind at 0 °C", DU_SFC_0C:"ΔU sfc–0 °C", DV_SFC_0C:"ΔV sfc–0 °C",
   SHEAR_SFC_0C:"Shear sfc–0 °C", WARM_LAYER_DEPTH:"Warm layer depth", COLD_LAYER_DEPTH:"Cold layer depth"
 };
-const memLabel = m => m === "hrrr" ? "HRRR (operational)" : m === "avg" ? "PMM / mean" : m === "lpmm" ? "Local PMM (precip)" : m === "spr" ? "Spread" : "Member " + parseInt(m.slice(1),10);
+const memLabel = m => m === "hrrr" ? "HRRR (operational)" : m === "avg" ? "PMM / mean" : m === "lpmm" ? "Local PMM (APCP only)" : m === "spr" ? "Spread" : "Member " + parseInt(m.slice(1),10);
 
 if (!M || !M.cases || !Object.keys(M.cases).length){
   document.querySelector("footer").hidden = true;
@@ -138,8 +138,11 @@ function splitProduct(p){
 // manifest: cases[case].domains[domain] = {members, memdirs, leads, products, prefix}
 // (older manifests have no "domains": the case object itself is the single domain)
 const DOMAIN_NAMES = {tx:"TX", hcfcd:"HCFCD (Harris Co.)"};
+// own-key lookup only: values from the URL (#c=..., #p=...) must never resolve to
+// inherited properties such as "__proto__" or "constructor"
+const own = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
 const domainsOf = k => M.cases[k].domains || {tx: M.cases[k]};
-function caseObj(){ const d = domainsOf(S.case); return d[S.domain] || d[Object.keys(d)[0]]; }
+function caseObj(){ const d = domainsOf(S.case); return own(d, S.domain) ? d[S.domain] : d[Object.keys(d)[0]]; }
 function fieldsOf(c){
   const f = {};
   for (const p of Object.keys(c.products)){ const [v,l] = splitProduct(p); (f[v] ||= []).push(l); }
@@ -184,11 +187,11 @@ function fillFields(){
     sel.appendChild(g);
   };
   grp("Featured", feat); grp("Surface & derived", sfc); grp("Pressure levels", upper);
-  if (!f[S.field]) S.field = feat[0] || names[0];
+  if (!own(f, S.field)) S.field = feat[0] || names[0];
   sel.value = S.field;
 }
 function fillLevels(){
-  const lv = fieldsOf(caseObj())[S.field] || [""], sel = $("level"); sel.innerHTML = "";
+  const fl = fieldsOf(caseObj()), lv = own(fl, S.field) ? fl[S.field] : [""], sel = $("level"); sel.innerHTML = "";
   for (const l of lv) sel.add(new Option(l === "surface" ? "surface" : l === "" ? "—" : l + " hPa", l));
   if (!lv.includes(S.level)) S.level = lv.includes("500") ? "500" : lv[0];
   sel.value = S.level;
@@ -300,12 +303,12 @@ function writeHash(){
 }
 function readHash(){
   const q = new URLSearchParams(location.hash.slice(1));
-  if (q.get("c") && M.cases[q.get("c")]) S.case = q.get("c");
+  if (own(M.cases, q.get("c"))) S.case = q.get("c");
   if (q.get("d")) S.domain = q.get("d");
   if (q.has("p")) S.field = q.get("p");
   if (q.has("l")) S.level = q.get("l");
   if (q.get("m")) S.members = new Set(q.get("m").split(","));
-  if (q.get("cols")) S.cols = q.get("cols");
+  if ([...$("cols").options].some(o => o.value === q.get("cols"))) S.cols = q.get("cols");
   if (q.get("z")) S.focus = q.get("z");
   return q.has("f") ? +q.get("f") : null;
 }
