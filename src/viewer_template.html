@@ -36,8 +36,11 @@ button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--ac
   border-bottom:1px solid var(--line);background:var(--panel2)}
 .cell .lbl b{color:var(--text);font-weight:600}
 .cell .img{position:relative;flex:1;display:flex;align-items:center;justify-content:center;cursor:zoom-in;
-  min-height:120px;background:var(--panel)}
-.cell img{max-width:100%;max-height:calc(100vh - 210px);display:block;object-fit:contain}
+  min-height:120px;background:var(--panel);overflow:hidden}
+.cell img{max-width:100%;max-height:calc(100vh - 210px);display:block;object-fit:contain;
+  transform-origin:0 0;user-select:none;-webkit-user-drag:none}
+#grid.zoomed .cell .img{cursor:grab;touch-action:none}
+#grid.zoomed .cell .img.panning{cursor:grabbing}
 .cell.focus .img{cursor:zoom-out}
 .cell.focus img{max-height:calc(100vh - 170px)}
 .missing{color:var(--muted);font-size:12px;padding:30px 10px;text-align:center}
@@ -64,6 +67,9 @@ footer{position:fixed;left:0;right:0;bottom:0;z-index:5;background:var(--panel);
   <div class="ctl"><label>Members</label><div class="chips" id="members"></div>
     <button class="chip" id="allMem" title="Show all">all</button></div>
   <div class="spacer"></div>
+  <div class="ctl"><label>Zoom</label>
+    <button id="zoomOut" title="Zoom out (−)">−</button><button id="zoomIn" title="Zoom in (+)">+</button>
+    <button id="zoomReset" title="Reset zoom (0)" disabled>reset</button></div>
   <div class="ctl"><label for="cols">Columns</label>
     <select id="cols"><option value="auto">auto</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select></div>
 </header>
@@ -83,7 +89,7 @@ footer{position:fixed;left:0;right:0;bottom:0;z-index:5;background:var(--panel);
   </div>
   <div id="time"></div>
   <div id="load"></div>
-  <div class="kbd">← → step · space play · ↑ ↓ level · click map to enlarge</div>
+  <div class="kbd">← → step · space play · ↑ ↓ level · click map to enlarge · ctrl+scroll / pinch / + − to zoom, drag to pan, 0 resets</div>
   <div class="kbd" id="gen"></div>
 </footer>
 
@@ -225,6 +231,62 @@ function computeLeads(){
   leads.forEach((l,i) => { if (i % step === 0 || i === leads.length-1){ const s=document.createElement("span"); s.textContent="f"+pad2(l); t.appendChild(s);} });
 }
 
+// ---------- zoom (shared by all panels, kept while stepping/looping) ----------
+// translate in % of the image box, then scale; % keeps panels of different sizes in sync
+const Z = {s:1, tx:0, ty:0}, ZMAX = 8;
+let panMoved = false;
+function applyZoom(){
+  Z.s = Math.min(ZMAX, Math.max(1, Z.s));
+  const lo = 100 * (1 - Z.s);                       // keep the image covering its box
+  Z.tx = Math.min(0, Math.max(lo, Z.tx)); Z.ty = Math.min(0, Math.max(lo, Z.ty));
+  if (Z.s === 1){ Z.tx = 0; Z.ty = 0; }
+  const t = Z.s === 1 ? "" : `translate(${Z.tx}%,${Z.ty}%) scale(${Z.s})`;
+  for (const im of $("grid").querySelectorAll(".cell img")) im.style.transform = t;
+  $("grid").classList.toggle("zoomed", Z.s > 1);
+  $("zoomReset").disabled = Z.s === 1;
+}
+function boxOf(img){                                  // untransformed image box
+  const r = img.getBoundingClientRect(), W = r.width / Z.s, H = r.height / Z.s;
+  return {r, W, H, left: r.left - Z.tx * W / 100, top: r.top - Z.ty * H / 100};
+}
+function zoomAt(img, cx, cy, factor){                 // keep the point under (cx, cy) fixed
+  const b = boxOf(img); if (!b.W) return;
+  const u = (cx - b.r.left) / b.r.width, v = (cy - b.r.top) / b.r.height;
+  const fx = (cx - b.left) / b.W, fy = (cy - b.top) / b.H;
+  const s2 = Math.min(ZMAX, Math.max(1, Z.s * factor));
+  Z.tx = 100 * (fx - s2 * u); Z.ty = 100 * (fy - s2 * v); Z.s = s2; applyZoom();
+}
+function zoomCenter(factor){
+  const img = [...$("grid").querySelectorAll(".cell img")].find(im => !im.hidden && im.naturalWidth);
+  if (!img) return;
+  const b = boxOf(img); zoomAt(img, b.left + b.W / 2, b.top + b.H / 2, factor);
+}
+function resetZoom(){ Z.s = 1; applyZoom(); }
+function wireZoom(box, img){
+  // ctrl+wheel (also a trackpad pinch) zooms; plain wheel zooms only when already zoomed or
+  // on a single enlarged map, so the page still scrolls normally over the grid
+  box.addEventListener("wheel", e => {
+    if (img.hidden || !(e.ctrlKey || e.metaKey || Z.s > 1 || S.focus)) return;
+    e.preventDefault();
+    zoomAt(img, e.clientX, e.clientY, Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.002)));
+  }, {passive:false});
+  let drag = null;
+  box.addEventListener("pointerdown", e => {
+    if (Z.s === 1 || e.button !== 0 || img.hidden) return;
+    const b = boxOf(img);
+    drag = {x:e.clientX, y:e.clientY, tx:Z.tx, ty:Z.ty, W:b.W, H:b.H};
+    panMoved = false; box.setPointerCapture(e.pointerId); box.classList.add("panning");
+  });
+  box.addEventListener("pointermove", e => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) panMoved = true;
+    Z.tx = drag.tx + 100 * dx / drag.W; Z.ty = drag.ty + 100 * dy / drag.H; applyZoom();
+  });
+  const end = () => { drag = null; box.classList.remove("panning"); };
+  box.addEventListener("pointerup", end); box.addEventListener("pointercancel", end);
+}
+
 // ---------- grid ----------
 let cells = {};
 function buildGrid(){
@@ -237,9 +299,15 @@ function buildGrid(){
   for (const m of shown){
     const cell = document.createElement("div"); cell.className = "cell" + (S.focus ? " focus" : "");
     cell.innerHTML = `<div class="lbl"><b>${memLabel(m)}</b><span></span></div><div class="img"><img alt=""><div class="missing" hidden>not available</div></div>`;
-    cell.querySelector(".img").onclick = () => { S.focus = S.focus ? null : m; buildGrid(); draw(); writeHash(); };
+    const box = cell.querySelector(".img");
+    box.onclick = () => {                            // a drag (pan) is not a click
+      if (panMoved){ panMoved = false; return; }
+      S.focus = S.focus ? null : m; buildGrid(); draw(); writeHash();
+    };
+    wireZoom(box, cell.querySelector("img"));
     g.appendChild(cell); cells[m] = cell;
   }
+  applyZoom();
 }
 function draw(){
   const lead = leads[S.idx];
@@ -318,8 +386,11 @@ function refresh(rebuildFields){
   if (rebuildFields){ fillDomains(); fillFields(); }
   fillLevels(); fillMembers(); computeLeads(); buildGrid(); draw(); preload(); writeHash();
 }
-$("case").onchange = e => { S.case = e.target.value; S.focus = null; refresh(true); };
-$("domain").onchange = e => { S.domain = e.target.value; S.focus = null; refresh(true); };
+$("case").onchange = e => { S.case = e.target.value; S.focus = null; resetZoom(); refresh(true); };
+$("domain").onchange = e => { S.domain = e.target.value; S.focus = null; resetZoom(); refresh(true); };
+$("zoomIn").onclick = () => zoomCenter(1.5);
+$("zoomOut").onclick = () => zoomCenter(1 / 1.5);
+$("zoomReset").onclick = resetZoom;
 $("field").onchange = e => { S.field = e.target.value; refresh(); };
 $("level").onchange = e => { S.level = e.target.value; refresh(); };
 $("cols").onchange = e => { S.cols = e.target.value; buildGrid(); draw(); writeHash(); };
@@ -336,6 +407,10 @@ document.addEventListener("keydown", e => {
   else if (e.key === " "){ play(!S.playing); e.preventDefault(); }
   else if (e.key === "Home"){ S.idx = 0; draw(); }
   else if (e.key === "End"){ S.idx = leads.length - 1; draw(); }
+  else if (e.key === "+" || e.key === "="){ zoomCenter(1.5); e.preventDefault(); }
+  else if (e.key === "-" || e.key === "_"){ zoomCenter(1 / 1.5); e.preventDefault(); }
+  else if (e.key === "0"){ resetZoom(); }
+  else if (e.key === "Escape" && Z.s > 1){ resetZoom(); }
   else if (e.key === "Escape" && S.focus){ S.focus = null; buildGrid(); draw(); writeHash(); }
   else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && $("levelWrap").style.display !== "none"){
     const sel = $("level"), i = sel.selectedIndex + (e.key === "ArrowUp" ? 1 : -1);   // up = higher in atmosphere
