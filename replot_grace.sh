@@ -125,7 +125,6 @@ fi
 python ${PACKAGEROOT}/src/plot.py ${INIT} ${LEAD} --members ${PLOT_MEMBERS} --domains ${PLOT_DOMAINS} \\
     --products ${PRODUCT_ARGS}--forecast_dir ${DATAROOT} --output_dir ${DATAROOT}
 
-python ${PACKAGEROOT}/src/make_viewer_index.py --base_dir ${DATAROOT}
 JOBEOF
 
     if [ -n "${DRYRUN:-}" ]; then
