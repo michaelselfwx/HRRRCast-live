@@ -215,9 +215,9 @@ class ForecastPlotterConfig:
 
         # Plot settings
         self.figure_size = (12, 8)
-        # 100 dpi -> ~1100 px wide, plenty for a browser (300 dpi made ~3300 px / ~1 MB files).
+        # 200 dpi -> ~2200 px wide, plenty for a browser (300 dpi made ~3300 px / ~1 MB files).
         # Override with HRRRCAST_PLOT_DPI; HRRRCAST_PLOT_QUANTIZE=0 keeps full-colour PNGs.
-        self.dpi = int(os.environ.get("HRRRCAST_PLOT_DPI", "150"))
+        self.dpi = int(os.environ.get("HRRRCAST_PLOT_DPI", "200"))
         self.quantize = os.environ.get("HRRRCAST_PLOT_QUANTIZE", "1") not in ("0", "false", "no")
         self.cmap_default = 'viridis'
         self.zoom_extent = None
@@ -394,7 +394,8 @@ class ForecastPlotter:
         aspect = (x1 - x0) / max(y1 - y0, 1e-6)          # PlateCarree: equal degrees
         mh = 6.0                                          # map height (in)
         mw = min(max(mh * aspect, 3.0), 12.0)
-        left, bottom, top, gap, cbw, cbtxt = 0.25, 0.25, 0.85, 0.15, 0.22, 1.25
+        # tight margins (in): just room for a 2-line title and the colour bar + its labels
+        left, bottom, top, gap, cbw, cbtxt = 0.08, 0.08, 0.48, 0.10, 0.18, 0.80
         W, H = left + mw + gap + cbw + cbtxt, bottom + mh + top
         fig = plt.figure(figsize=(W, H))
         rect = [left / W, bottom / H, mw / W, mh / H]
@@ -406,7 +407,7 @@ class ForecastPlotter:
         else:
             ax = fig.add_axes(rect)
             ax.set_xlim(x0, x1); ax.set_ylim(y0, y1)
-        cax = fig.add_axes([(left + mw + gap) / W, (bottom + 0.12 * mh) / H, cbw / W, 0.76 * mh / H])
+        cax = fig.add_axes([(left + mw + gap) / W, (bottom + 0.06 * mh) / H, cbw / W, 0.88 * mh / H])
         return fig, ax, cax
 
     def create_plot(self, data: np.ndarray, lats: np.ndarray, lons: np.ndarray,
@@ -449,10 +450,11 @@ class ForecastPlotter:
         if norm is None and len(levels) > 12:              # fixed, readable tick set
             cbar.set_ticks(levels[::int(np.ceil(len(levels) / 11))])
         what = f"{long_name} spread" if spread else long_name
-        cbar.set_label(f'{what} ({units})', fontsize=10)
+        cbar.ax.tick_params(labelsize=8, length=3, pad=2)
+        cbar.set_label(f'{what} ({units})', fontsize=8.5, labelpad=3)
 
         level_str = f" at {level} hPa" if level is not None else ""
-        ax.set_title(f"{what}{level_str}{title_suffix}", fontsize=12, fontweight='bold')
+        ax.set_title(f"{what}{level_str}{title_suffix}", fontsize=10, fontweight='bold', pad=4)
         return fig
 
     def plot_pressure_level_variables(self, ds: xr.Dataset, lead_hour: int, 
