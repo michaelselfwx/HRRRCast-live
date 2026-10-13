@@ -217,7 +217,7 @@ class ForecastPlotterConfig:
         self.figure_size = (12, 8)
         # 100 dpi -> ~1100 px wide, plenty for a browser (300 dpi made ~3300 px / ~1 MB files).
         # Override with HRRRCAST_PLOT_DPI; HRRRCAST_PLOT_QUANTIZE=0 keeps full-colour PNGs.
-        self.dpi = int(os.environ.get("HRRRCAST_PLOT_DPI", "100"))
+        self.dpi = int(os.environ.get("HRRRCAST_PLOT_DPI", "150"))
         self.quantize = os.environ.get("HRRRCAST_PLOT_QUANTIZE", "1") not in ("0", "false", "no")
         self.cmap_default = 'viridis'
         self.zoom_extent = None
