@@ -114,19 +114,75 @@ def _normalize_range(range_values: Optional[List[float]], range_name: str) -> Op
     return (min(low, high), max(low, high))
 
 
+# Fixed colour levels, so every member, the HRRR and every lead hour share one colour bar (and
+# the viewer doesn't jitter). Keys: variable, or "<var>_<level>hPa" for one pressure level.
+# Fields with their own categorical scale (REFC, APCP, CAPE, CIN, VIS, HGTCC, precip totals)
+# are handled in create_plot; anything not listed falls back to rounded data-based levels.
+_r = lambda a, b, d: np.round(np.arange(a, b + d / 2, d), 6)
+FIXED_LEVELS = {
+    "T2M": _r(240, 320, 2), "D2M": _r(240, 310, 2), "POT2M": _r(250, 330, 2),
+    "R2M": _r(0, 100, 5), "SPFH2M": _r(0, 0.024, 0.001),
+    "WIND_10M": _r(0, 40, 2), "UGRD10M": _r(-30, 30, 2), "VGRD10M": _r(-30, 30, 2),
+    "UGRD80M": _r(-40, 40, 4), "VGRD80M": _r(-40, 40, 4),
+    "GUST": _r(0, 50, 2), "WIND_MAX": _r(0, 60, 2),
+    "MSLMA": _r(97000, 104000, 200), "PRES": _r(60000, 105000, 1500),
+    "PWAT": _r(0, 80, 4),
+    "TCDC": _r(0, 100, 10), "LCDC": _r(0, 100, 10), "MCDC": _r(0, 100, 10), "HCDC": _r(0, 100, 10),
+    "HLCY_0_1km": _r(-200, 600, 40), "HLCY_0_3km": _r(-200, 800, 50),
+    "TMP": _r(200, 320, 4), "TMP_850hPa": _r(250, 310, 2), "TMP_700hPa": _r(240, 300, 2),
+    "TMP_500hPa": _r(225, 275, 2), "TMP_250hPa": _r(205, 245, 2),
+    "HGT_850hPa": _r(1200, 1650, 15), "HGT_700hPa": _r(2700, 3250, 15),
+    "HGT_500hPa": _r(5100, 6000, 30), "HGT_300hPa": _r(8400, 9900, 50), "HGT_250hPa": _r(9600, 11100, 50),
+    "UGRD": _r(-60, 60, 5), "VGRD": _r(-60, 60, 5), "VVEL": _r(-5, 5, 0.5),
+    "SPFH": _r(0, 0.024, 0.001),
+}
+# ensemble spread (standard deviation) of the same fields
+SPREAD_LEVELS = {
+    "T2M": _r(0, 6, 0.25), "D2M": _r(0, 8, 0.5), "R2M": _r(0, 30, 1.5),
+    "WIND_10M": _r(0, 8, 0.5), "UGRD10M": _r(0, 8, 0.5), "VGRD10M": _r(0, 8, 0.5),
+    "GUST": _r(0, 10, 0.5), "MSLMA": _r(0, 600, 25), "PWAT": _r(0, 10, 0.5),
+    "HLCY_0_1km": _r(0, 200, 10), "HLCY_0_3km": _r(0, 300, 15),
+    "REFC": _r(0, 25, 1), "APCP": _r(0, 20, 1), "CAPE": _r(0, 1500, 75), "CIN": _r(0, 300, 15),
+    "TMP": _r(0, 5, 0.25), "HGT": _r(0, 60, 3), "HGT_500hPa": _r(0, 60, 3),
+    "UGRD": _r(0, 10, 0.5), "VGRD": _r(0, 10, 0.5), "VVEL": _r(0, 2, 0.1),
+}
+
+
+def nice_levels(data, spread: bool = False, n: int = 20) -> np.ndarray:
+    """Fallback levels: ~n steps of a 1/2/2.5/5 x 10^k size over the 1-99 % range."""
+    v = np.asarray(data, dtype=float)
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return np.linspace(0, 1, n + 1)
+    lo, hi = (0.0, float(np.percentile(v, 99))) if spread else map(float, np.percentile(v, [1, 99]))
+    if hi <= lo:
+        hi = lo + 1.0
+    raw = (hi - lo) / n
+    mag = 10 ** np.floor(np.log10(raw))
+    step = next(m * mag for m in (1, 2, 2.5, 5, 10) if m * mag >= raw)
+    return np.round(np.arange(np.floor(lo / step) * step, np.ceil(hi / step) * step + step / 2, step), 10)
+
+
+def fixed_levels(var_name: str, level, data, spread: bool = False) -> np.ndarray:
+    table = SPREAD_LEVELS if spread else FIXED_LEVELS
+    key = f"{var_name}_{level}hPa" if level is not None else var_name
+    lv = table.get(key, table.get(var_name))
+    return np.asarray(lv, dtype=float) if lv is not None else nice_levels(data, spread)
+
+
 def save_png(fig, path: str, dpi: int, quantize: bool = True) -> None:
     """Save a figure as a small PNG: rendered at `dpi`, then stored as an 8-bit palette image
     (contour plots have few colours, so it looks the same at ~1/4 of the size)."""
     if not quantize:
-        fig.savefig(path, dpi=dpi, bbox_inches='tight')
+        fig.savefig(path, dpi=dpi)
         return
     import io
     from PIL import Image
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=dpi, bbox_inches='tight')
+    fig.savefig(buf, format="png", dpi=dpi)
     buf.seek(0)
     with Image.open(buf) as im:
-        im = im.convert("RGB").quantize(colors=256, method=Image.Quantize.MEDIANCUT,
+        im = im.convert("RGB").quantize(colors=256, method=Image.Quantize.MAXCOVERAGE,
                                         dither=Image.Dither.NONE)
         im.save(path, format="PNG", optimize=True)
 
@@ -172,6 +228,7 @@ class ForecastPlotterConfig:
         # US county borders (Natural Earth 10m admin_2_counties; downloaded once by cartopy).
         # Turn off with --no-counties or HRRRCAST_PLOT_COUNTIES=0.
         self.counties = os.environ.get("HRRRCAST_PLOT_COUNTIES", "1") not in ("0", "false", "no")
+        self.spread = False     # plotting ensemble spread ("spr"): spread colour scales
 
 
 class ForecastPlotter:
@@ -324,75 +381,76 @@ class ForecastPlotter:
         return cmap, norm, min(levels), max(levels)
 
     
-    def create_plot(self, data: np.ndarray, lats: np.ndarray, lons: np.ndarray, 
-                   var_name: str, level: Optional[int] = None, 
+    def _map_extent(self, lats, lons):
+        if self.config.zoom_extent is not None:
+            return self.config.zoom_extent
+        lo = ((np.asarray(lons) + 180.0) % 360.0) - 180.0
+        return (float(np.nanmin(lo)), float(np.nanmax(lo)), float(np.nanmin(lats)), float(np.nanmax(lats)))
+
+    def _new_map_figure(self, lats, lons):
+        """Figure with a fixed layout: same size, map and colour bar position for every image of
+        a domain (no tight cropping), so frames don't shift when tick labels change."""
+        x0, x1, y0, y1 = self._map_extent(lats, lons)
+        aspect = (x1 - x0) / max(y1 - y0, 1e-6)          # PlateCarree: equal degrees
+        mh = 6.0                                          # map height (in)
+        mw = min(max(mh * aspect, 3.0), 12.0)
+        left, bottom, top, gap, cbw, cbtxt = 0.25, 0.25, 0.85, 0.15, 0.22, 1.25
+        W, H = left + mw + gap + cbw + cbtxt, bottom + mh + top
+        fig = plt.figure(figsize=(W, H))
+        rect = [left / W, bottom / H, mw / W, mh / H]
+        if self.use_cartopy:
+            ax = fig.add_axes(rect, projection=ccrs.PlateCarree())
+            self._add_map_features(ax)
+            ax.set_extent((x0, x1, y0, y1), crs=ccrs.PlateCarree())
+            ax.gridlines(draw_labels=False)
+        else:
+            ax = fig.add_axes(rect)
+            ax.set_xlim(x0, x1); ax.set_ylim(y0, y1)
+        cax = fig.add_axes([(left + mw + gap) / W, (bottom + 0.12 * mh) / H, cbw / W, 0.76 * mh / H])
+        return fig, ax, cax
+
+    def create_plot(self, data: np.ndarray, lats: np.ndarray, lons: np.ndarray,
+                   var_name: str, level: Optional[int] = None,
                    title_suffix: str = "") -> plt.Figure:
         """Create a plot for a given variable."""
-        
-        # Get variable configuration from VARIABLE_METADATA
         var_meta = VARIABLE_METADATA.get(var_name) or DERIVED_META.get(var_name, {})
         units = var_meta.get('units', '')
         long_name = var_meta.get('long_name', var_name)
-        
-        # Special handling for categorical / thresholded fields
-        norm = None
-        if var_name == 'REFC':
-            cmap, norm, vmin, vmax = self.get_refc_cmap()
-        elif var_name == 'APCP':
-            cmap, norm, vmin, vmax = self.get_apcp_cmap()
-        elif var_name in DERIVED_META:
-            cmap, norm, vmin, vmax = self.get_apcp_accum_cmap()
-        elif var_name == 'CAPE':
-            cmap, norm, vmin, vmax = self.get_cape_cmap()
-        elif var_name == 'CIN':
-            cmap, norm, vmin, vmax = self.get_cin_cmap()
-        elif var_name == 'VIS':
-            cmap, norm, vmin, vmax = self.get_vis_cmap()
-        elif var_name == 'HGTCC':
-            cmap, norm, vmin, vmax = self.get_hgtcc_cmap()
-        else:
-            cmap = var_meta.get('cmap', self.config.cmap_default)
-            norm = None
-            vmin = np.nanmin(data)
-            vmax = np.nanmax(data)
-        
-        # Create figure
-        if self.use_cartopy:
-            fig = plt.figure(figsize=self.config.figure_size)
-            ax = plt.axes(projection=ccrs.PlateCarree())
-            self._add_map_features(ax)
-            if self.config.zoom_extent is not None:
-                ax.set_extent(self.config.zoom_extent, crs=ccrs.PlateCarree())
+        spread = getattr(self.config, "spread", False)
 
-            ax.gridlines(draw_labels=False)
+        # Categorical / thresholded fields keep their own scales; everything else gets fixed
+        # levels (FIXED_LEVELS / SPREAD_LEVELS) so all members and lead hours match.
+        norm = None
+        special = {'REFC': self.get_refc_cmap, 'APCP': self.get_apcp_cmap, 'CAPE': self.get_cape_cmap,
+                   'CIN': self.get_cin_cmap, 'VIS': self.get_vis_cmap, 'HGTCC': self.get_hgtcc_cmap}
+        if not spread and var_name in special:
+            cmap, norm, vmin, vmax = special[var_name]()
+            levels = norm.boundaries
+        elif not spread and var_name in DERIVED_META:
+            cmap, norm, vmin, vmax = self.get_apcp_accum_cmap()
+            levels = norm.boundaries
         else:
-            fig, ax = plt.subplots(figsize=self.config.figure_size)
-        
-        # Create the plot
+            cmap = "YlOrRd" if spread else var_meta.get('cmap', self.config.cmap_default)
+            if cmap not in plt.colormaps():
+                cmap = self.config.cmap_default
+            levels = fixed_levels(var_name, level, data, spread)
+
+        fig, ax, cax = self._new_map_figure(lats, lons)
         if norm is not None:
-            im = ax.contourf(lons, lats, data, levels=norm.boundaries, 
-                           cmap=cmap, norm=norm, extend='both')
+            im = ax.contourf(lons, lats, data, levels=levels, cmap=cmap, norm=norm, extend='both')
         else:
-            im = ax.contourf(lons, lats, data, levels=20, cmap=cmap, vmin=vmin, vmax=vmax, extend='both')
-        
-        # Add colorbar
-        cbar = plt.colorbar(im, ax=ax, shrink=0.5, pad=0.02)
-        cbar.set_label(f'{long_name} ({units})', fontsize=10)
-        
-        # Set title
+            im = ax.contourf(lons, lats, data, levels=levels, cmap=cmap, extend='both')
+
+        cbar = fig.colorbar(im, cax=cax)
+        if norm is None and len(levels) > 12:              # fixed, readable tick set
+            cbar.set_ticks(levels[::int(np.ceil(len(levels) / 11))])
+        what = f"{long_name} spread" if spread else long_name
+        cbar.set_label(f'{what} ({units})', fontsize=10)
+
         level_str = f" at {level} hPa" if level is not None else ""
-        title = f"{long_name}{level_str}{title_suffix}"
-        ax.set_title(title, fontsize=12, fontweight='bold')
-        
-        # Set labels
-        ax.set_xlabel('Longitude', fontsize=10)
-        ax.set_ylabel('Latitude', fontsize=10)
-        
-        # Adjust layout
-        plt.tight_layout()
-        
+        ax.set_title(f"{what}{level_str}{title_suffix}", fontsize=12, fontweight='bold')
         return fig
-    
+
     def plot_pressure_level_variables(self, ds: xr.Dataset, lead_hour: int, 
                                     output_dir: str, timestamp_str: str) -> None:
         """Plot all pressure level variables."""
@@ -496,6 +554,7 @@ class ForecastPlotter:
             
             if self.use_cartopy:
                 # Recreate with cartopy if available
+                plt.close(fig)
                 fig = plt.figure(figsize=(16, 12))
                 axes = []
                 for i in range(4):
@@ -531,8 +590,12 @@ class ForecastPlotter:
                 var_meta = VARIABLE_METADATA.get(var_display, {})
                 cmap = var_meta.get('cmap', self.config.cmap_default)
                 
+                spread = getattr(self.config, "spread", False)
                 # Special handling for REFC/APCP
-                if var_display == 'REFC':
+                if spread:
+                    im = axes[i].contourf(lons, lats, data, cmap="YlOrRd", extend='both',
+                                          levels=fixed_levels(var_display, level, data, True))
+                elif var_display == 'REFC':
                     cmap_refc, norm_refc, *_ = self.get_refc_cmap()
                     im = axes[i].contourf(
                         lons, lats, data, levels=norm_refc.boundaries,
@@ -545,7 +608,10 @@ class ForecastPlotter:
                         cmap=cmap_apcp, norm=norm_apcp, extend='both'
                     )
                 else:
-                    im = axes[i].contourf(lons, lats, data, levels=20, cmap=cmap, extend='both')
+                    if cmap not in plt.colormaps():
+                        cmap = self.config.cmap_default
+                    im = axes[i].contourf(lons, lats, data, cmap=cmap, extend='both',
+                                          levels=fixed_levels(var_display, level, data))
                 
                 # Add colorbar
                 plt.colorbar(im, ax=axes[i], shrink=0.4)
@@ -555,8 +621,9 @@ class ForecastPlotter:
                                 fontsize=10, fontweight='bold')
                 axes[i].grid(True, alpha=0.3)
             
-            plt.tight_layout()
-            
+            # fixed margins (no tight_layout) so every summary image has the same layout
+            fig.subplots_adjust(left=0.03, right=0.97, bottom=0.04, top=0.93, wspace=0.12, hspace=0.18)
+
             # Save summary plot
             filename = f"summary_lead{lead_hour:02d}h.png"
             filepath = os.path.join(output_dir, filename)
@@ -652,6 +719,7 @@ def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, i
         setattr(config, k, v)
     if member == "hrrr":
         config.run_label = "HRRR "
+    config.spread = (member == "spr")
     plotter = ForecastPlotter(config)
     base_zoom, base_county_lw = config.zoom_extent, config.county_lw
     ds = xr.open_dataset(ds_path, decode_timedelta=True)
