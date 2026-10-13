@@ -31,7 +31,7 @@ def shrink(path: str, max_width: int, colors: int, dry_run: bool):
         im = im.convert("RGB")                         # plots have no real transparency
         if w > max_width:
             im = im.resize((max_width, round(h * max_width / w)), Image.LANCZOS)
-        im = im.quantize(colors=colors, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+        im = im.quantize(colors=colors, method=Image.Quantize.MAXCOVERAGE, dither=Image.Dither.NONE)
     if dry_run:
         import io
         buf = io.BytesIO()
