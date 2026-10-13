@@ -228,7 +228,7 @@ class ForecastPlotterConfig:
         # US county borders (Natural Earth 10m admin_2_counties; downloaded once by cartopy).
         # Turn off with --no-counties or HRRRCAST_PLOT_COUNTIES=0.
         self.counties = os.environ.get("HRRRCAST_PLOT_COUNTIES", "1") not in ("0", "false", "no")
-        self.spread = False     # plotting ensemble spread ("spr"): spread colour scales
+        self.spread = False     # plotting ensemble spread ("spr"): "spread" titles, spread ranges for continuous fields
 
 
 class ForecastPlotter:
@@ -416,21 +416,25 @@ class ForecastPlotter:
         var_meta = VARIABLE_METADATA.get(var_name) or DERIVED_META.get(var_name, {})
         units = var_meta.get('units', '')
         long_name = var_meta.get('long_name', var_name)
+        # Spread uses the members' colour bars: REFC, APCP, CAPE, ... get exactly the same scale,
+        # so spread magnitudes read directly against the member maps. Continuous fields keep
+        # their colour map but use the spread range from SPREAD_LEVELS (a 0-6 K spread on the
+        # 240-320 K temperature scale would be a single colour).
         spread = getattr(self.config, "spread", False)
 
         # Categorical / thresholded fields keep their own scales; everything else gets fixed
-        # levels (FIXED_LEVELS / SPREAD_LEVELS) so all members and lead hours match.
+        # levels (FIXED_LEVELS) so all members, the HRRR, the spread and lead hours match.
         norm = None
         special = {'REFC': self.get_refc_cmap, 'APCP': self.get_apcp_cmap, 'CAPE': self.get_cape_cmap,
                    'CIN': self.get_cin_cmap, 'VIS': self.get_vis_cmap, 'HGTCC': self.get_hgtcc_cmap}
-        if not spread and var_name in special:
+        if var_name in special:
             cmap, norm, vmin, vmax = special[var_name]()
             levels = norm.boundaries
-        elif not spread and var_name in DERIVED_META:
+        elif var_name in DERIVED_META:
             cmap, norm, vmin, vmax = self.get_apcp_accum_cmap()
             levels = norm.boundaries
         else:
-            cmap = "YlOrRd" if spread else var_meta.get('cmap', self.config.cmap_default)
+            cmap = var_meta.get('cmap', self.config.cmap_default)
             if cmap not in plt.colormaps():
                 cmap = self.config.cmap_default
             levels = fixed_levels(var_name, level, data, spread)
@@ -590,12 +594,8 @@ class ForecastPlotter:
                 var_meta = VARIABLE_METADATA.get(var_display, {})
                 cmap = var_meta.get('cmap', self.config.cmap_default)
                 
-                spread = getattr(self.config, "spread", False)
-                # Special handling for REFC/APCP
-                if spread:
-                    im = axes[i].contourf(lons, lats, data, cmap="YlOrRd", extend='both',
-                                          levels=fixed_levels(var_display, level, data, True))
-                elif var_display == 'REFC':
+                # Special handling for REFC/APCP (spread uses the same scales as the members)
+                if var_display == 'REFC':
                     cmap_refc, norm_refc, *_ = self.get_refc_cmap()
                     im = axes[i].contourf(
                         lons, lats, data, levels=norm_refc.boundaries,
@@ -611,7 +611,8 @@ class ForecastPlotter:
                     if cmap not in plt.colormaps():
                         cmap = self.config.cmap_default
                     im = axes[i].contourf(lons, lats, data, cmap=cmap, extend='both',
-                                          levels=fixed_levels(var_display, level, data))
+                                          levels=fixed_levels(var_display, level, data,
+                                                              getattr(self.config, "spread", False)))
                 
                 # Add colorbar
                 plt.colorbar(im, ax=axes[i], shrink=0.4)
