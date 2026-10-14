@@ -32,7 +32,7 @@ from pathlib import Path
 # Public server the plot folders are published to: images load from
 # <IMAGE_BASE_URL>YYYYMMDD/HH/<member>_leadNNh/<PRODUCT>_leadNNh.png
 # Override with --image_base_url / $HRRRCAST_IMAGE_BASE_URL; --local loads them from next to viewer.html.
-IMAGE_BASE_URL = "https://hdwx.tamu.edu/products/wxgen3/HRRRCast/"
+IMAGE_BASE_URL = "https://hdwx.tamu.edu/products/HRRRCast"
 
 CASE_RE = re.compile(r"^\d{8}$")
 HOUR_RE = re.compile(r"^\d{2}$")

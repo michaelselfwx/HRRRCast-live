@@ -653,9 +653,20 @@ DOMAINS = {
             (30.833933, -94.686062),   # NE  X 3,322,509.65  Y 14,239,458.32
             (30.861971, -96.118770),   # NW  X 2,872,690.00  Y 14,235,821.99
         ],
-        "pad": 3,             # extra grid points kept around the box so contours fill the frame
+        "pad": 0,             # extra grid points kept around the box so contours fill the frame
         "county_lw": 0.5,     # county lines matter at this scale
     },
+    "hcfcd_href": {
+        "label": "HCFCD (HREF)",
+        "corners": [
+            (29.310392, -96.126871),   # SW
+            (29.314217, -94.716620),   # SE
+            (30.815471, -94.712971),   # NE  
+            (30.811606, -96.141382),   # NW 
+        ],
+        "pad": 0,
+        "county_lw": 0.5,
+    }
 }
 
 
