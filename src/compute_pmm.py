@@ -444,14 +444,24 @@ def compute_ensemble_pmm(datetime_str: str,
             spread_ds.to_netcdf(out_nc_spread, encoding=encoding, engine=utils.netcdf_engine())
             logger.info(f"Wrote NetCDF : {out_nc_spread}")
 
-            # Save per-hour GRIB2
-            avg_grib2 = os.path.join(output_date_dir, f"hrrrcast.avg.t{cycle:02d}z.pgrb2.f{h:02d}")
-            converter.save_grib2(init_datetime, processed_ds, avg_grib2)
-            logger.info(f"Wrote GRIB2 : {avg_grib2}")
-
-            spr_grib2 = os.path.join(output_date_dir, f"hrrrcast.spr.t{cycle:02d}z.pgrb2.f{h:02d}")
-            converter.save_grib2(init_datetime, spread_ds, spr_grib2)
-            logger.info(f"Wrote GRIB2 : {spr_grib2}")
+            # Save per-hour GRIB2, like fcst.py writes the members: the grid definition comes from
+            # this (cropped) grid's own size and first point, and lead_time is the integer hour.
+            # (A bare Netcdf2Grib() describes the full 1799x1059 CONUS grid, which does not match
+            # the cropped data, and lead_time here is a timedelta, not hours.)
+            lat2d = np.asarray(processed_ds["latitude"].values)
+            lon2d = np.asarray(processed_ds["longitude"].values)
+            ny, nx = lat2d.shape[-2:]
+            grid_converter = Netcdf2Grib(section3=Netcdf2Grib.construct_section3_hrrr(
+                nx=nx, ny=ny, lat1=float(lat2d[0, 0]), lon1=float(lon2d[0, 0]) % 360.0))
+            for tag, ds_out in (("avg", processed_ds), ("spr", spread_ds)):
+                out_grib2 = os.path.join(output_date_dir, f"hrrrcast.{tag}.t{cycle:02d}z.pgrb2.f{h:02d}")
+                ds_g = ds_out.assign_coords(lead_time=("lead_time", [h] * ds_out.sizes.get("lead_time", 1))) \
+                    if "lead_time" in ds_out.coords else ds_out
+                try:
+                    grid_converter.save_grib2(init_datetime, ds_g, out_grib2)
+                    logger.info(f"Wrote GRIB2 : {out_grib2}")
+                except Exception as e:
+                    logger.warning(f"GRIB2 {out_grib2} failed: {e}")
 
             # Close datasets to free memory
             ensemble_ds.close()

@@ -6,9 +6,15 @@ Downloads the NOAA HRRR forecast from the same cycle HRRRCast was initialized fr
 AWS bucket get_ics.py uses), keeps only the fields HRRRCast predicts, and writes them in
 the HRRRCast output layout:
 
-    YYYYMMDD/HH/hrrrcast_hrrr_fHH.nc      (same variables, levels, grid and crop)
+    YYYYMMDD/HH/hrrrcast_hrrr_fHH.nc        (same variables, levels, grid and crop)
+    YYYYMMDD/HH/hrrrcast.hrrr.tHHz.pgrb2.fHH  (+ .idx) GRIB2 written by the same writer as the
+                                             HRRRCast members' GRIB2 (nc2grib.Netcdf2Grib), so
+                                             the files have the same messages, order and grid
 
-so plot.py (--members hrrr), derived_precip.py and the viewer treat it like any member.
+so plot.py (--members hrrr), derived_precip.py and the viewer treat it like any member, and
+GRIB tools (wgrib2, pygrib, crop_grib.py, combine_grib.py) compare it message by message.
+Rerunning on a case that already has the NetCDF files only writes the missing GRIB2 files
+(no download); --no_grib2 skips the GRIB2 output.
 
 Only the needed GRIB messages are fetched, using the .idx byte offsets (about 150 MB per
 forecast hour instead of ~550 MB). Diagnostics (WIND_10M, HLCY_0_3km, ...) are computed
@@ -298,8 +304,43 @@ def _pick_apcp(msgs, h: int):
     return None
 
 
+def nc_to_grib(nc_path: str, grib_path: str, init_iso: str, h: int) -> bool:
+    """hrrrcast.hrrr.tHHz.pgrb2.fHH from hrrrcast_hrrr_fHH.nc, written exactly like fcst.py
+    writes the members' GRIB2 (same Netcdf2Grib writer, Section 3 from the first grid point)."""
+    from datetime import datetime
+    try:
+        from nc2grib import Netcdf2Grib
+    except Exception as e:  # grib2io missing in this environment
+        logger.warning(f"f{h:02d}: GRIB2 skipped, nc2grib/grib2io unavailable ({e})")
+        return False
+    init_dt = datetime.fromisoformat(init_iso)
+    with xr.open_dataset(nc_path, decode_timedelta=False) as src:
+        ds = src.load()
+    lat2d = np.asarray(ds["latitude"].values)
+    lon2d = np.asarray(ds["longitude"].values)
+    ny, nx = lat2d.shape[-2:]
+    section3 = Netcdf2Grib.construct_section3_hrrr(nx=nx, ny=ny, lat1=float(lat2d[0, 0]),
+                                                   lon1=float(lon2d[0, 0]) % 360.0)
+    if "lead_time" in ds.coords:
+        ds = ds.assign_coords(lead_time=("lead_time", [h]))
+    tmp = grib_path + ".tmp"
+    for p in (tmp, tmp + ".idx"):
+        if os.path.exists(p):
+            os.remove(p)
+    Netcdf2Grib(section3=section3).save_grib2(init_dt, ds, tmp)
+    if not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
+        logger.warning(f"f{h:02d}: GRIB2 writer produced no output for {os.path.basename(grib_path)}")
+        return False
+    os.replace(tmp, grib_path)
+    if os.path.exists(tmp + ".idx"):
+        # the index lists byte offsets only, so it stays valid after the rename
+        os.replace(tmp + ".idx", grib_path + ".idx")
+    return True
+
+
 def convert_hour(init_iso: str, h: int, sfc_path: str, prs_path: str, out_path: str,
-                 crop: Optional[Tuple[int, int, int, int]], ref_path: Optional[str]) -> str:
+                 crop: Optional[Tuple[int, int, int, int]], ref_path: Optional[str],
+                 grib_path: Optional[str] = None) -> str:
     """Read one forecast hour from the subset GRIBs and write hrrrcast_hrrr_fHH.nc."""
     import pygrib  # imported here so the download-only path works without it
     from datetime import datetime
@@ -390,13 +431,18 @@ def convert_hour(init_iso: str, h: int, sfc_path: str, prs_path: str, out_path: 
     tmp = out_path + ".tmp"
     ds.to_netcdf(tmp, encoding=get_cf_encoding(ds, init_dt), engine=utils.netcdf_engine())
     os.replace(tmp, out_path)
+    if grib_path:
+        try:
+            nc_to_grib(out_path, grib_path, init_iso, h)
+        except Exception as e:
+            logger.warning(f"f{h:02d}: GRIB2 output failed ({e}); the NetCDF file is fine")
     return out_path
 
 
 # --------------------------------------------------------------------------- driver
 def run(inittime: str, lead_hours: int, base_dir: str, start_hour: int = 1,
         subset: Optional[str] = None, full: bool = False, workers: int = 4,
-        keep_grib: bool = False, overwrite: bool = False) -> int:
+        keep_grib: bool = False, overwrite: bool = False, grib2: bool = True) -> int:
     init_dt, y, mo, d, hh = utils.validate_datetime(inittime)
     ymd = f"{y}{mo}{d}"
     case_dir = Path(base_dir) / ymd / hh
@@ -422,6 +468,26 @@ def run(inittime: str, lead_hours: int, base_dir: str, start_hour: int = 1,
 
     hours = [h for h in range(start_hour, lead_hours + 1)
              if overwrite or not (case_dir / f"hrrrcast_hrrr_f{h:02d}.nc").exists()]
+    grib_out = lambda h: str(case_dir / f"hrrrcast.hrrr.t{hh}z.pgrb2.f{h:02d}") if grib2 else None
+
+    # GRIB2 for hours whose NetCDF already exists (e.g. cases run before the GRIB2 output)
+    backfill = [h for h in range(start_hour, lead_hours + 1)
+                if grib2 and h not in hours and (case_dir / f"hrrrcast_hrrr_f{h:02d}.nc").exists()
+                and not Path(grib_out(h)).exists()]
+    if backfill:
+        logger.info(f"Writing hrrrcast.hrrr.t{hh}z.pgrb2.fHH from the existing NetCDF for hours "
+                    f"{backfill[0]}-{backfill[-1]}")
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(nc_to_grib, str(case_dir / f"hrrrcast_hrrr_f{h:02d}.nc"), grib_out(h),
+                              init_dt.isoformat(), h): h for h in backfill}
+            n_ok = 0
+            for fut in as_completed(futs):
+                try:
+                    n_ok += bool(fut.result())
+                except Exception as e:
+                    logger.warning(f"f{futs[fut]:02d}: GRIB2 output failed: {e}")
+        logger.info(f"Wrote {n_ok}/{len(backfill)} HRRR GRIB2 files")
+
     if not hours:
         logger.info("All hrrrcast_hrrr_fHH.nc files already exist (use --overwrite to redo)")
         return 0
@@ -440,7 +506,7 @@ def run(inittime: str, lead_hours: int, base_dir: str, start_hour: int = 1,
                 continue
             out = str(case_dir / f"hrrrcast_hrrr_f{h:02d}.nc")
             cv_futs[cv.submit(convert_hour, init_dt.isoformat(), h, str(paths[0]), str(paths[1]),
-                              out, crop, str(ref) if ref else None)] = (h, paths)
+                              out, crop, str(ref) if ref else None, grib_out(h))] = (h, paths)
         for fut in as_completed(cv_futs):
             h, paths = cv_futs[fut]
             try:
@@ -472,12 +538,14 @@ def main():
     ap.add_argument("--workers", type=int, default=4, help="Parallel conversion processes")
     ap.add_argument("--keep_grib", action="store_true", help="Keep the downloaded GRIB subsets (YYYYMMDD/HH/hrrr_fcst/)")
     ap.add_argument("--overwrite", action="store_true", help="Redo hours that already have hrrrcast_hrrr_fHH.nc")
+    ap.add_argument("--no_grib2", action="store_true",
+                    help="Do not write hrrrcast.hrrr.tHHz.pgrb2.fHH (GRIB2 like the HRRRCast members)")
     ap.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = ap.parse_args()
     global logger
     logger = setup_logging(args.log_level)
     sys.exit(run(args.inittime, args.lead_hours, args.base_dir, args.start_hour, args.subset,
-                 args.full, args.workers, args.keep_grib, args.overwrite))
+                 args.full, args.workers, args.keep_grib, args.overwrite, not args.no_grib2))
 
 
 if __name__ == "__main__":
