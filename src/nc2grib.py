@@ -36,6 +36,20 @@ import grib2io
 from cf_attributes import VARIABLE_METADATA
 from utils import setup_logging
 
+
+def _set_data(msg, vals2d) -> None:
+    """Attach a 2-D field to a message. NaNs (e.g. HRRR cloud ceiling where there is no
+    ceiling) are written as missing through a bitmap; without one grib2io turns them into
+    Python objects and the packing fails ("Buffer dtype mismatch ... Python object")."""
+    arr = np.asarray(vals2d, dtype=np.float32)
+    if np.isnan(arr).any():
+        try:
+            from grib2io.templates import Grib2Metadata
+            msg.bitMapFlag = Grib2Metadata(0, table="6.0")
+        except Exception:
+            msg.bitMapFlag = 0
+    msg.data = arr
+
 logger = setup_logging("INFO")
 
 
@@ -337,8 +351,8 @@ class Netcdf2Grib:
                             vals2d = vals[0, :, :]
                         else:
                             vals2d = vals
-                        msg.data = np.asarray(vals2d)
-                        messages_to_write.append(msg)
+                        _set_data(msg, vals2d)
+                        messages_to_write.append((f"{var_name}:{plevel / 100:g}hPa", msg))
                 else:
                     msg = self._build_message(var_name, forecast_starttime, lead, surface_type=surface_type, surface_value=surface_value)
                     vals = np.squeeze(da.values)
@@ -348,8 +362,8 @@ class Netcdf2Grib:
                         vals2d = vals
                     else:
                         vals2d = np.squeeze(vals)
-                    msg.data = np.asarray(vals2d)
-                    messages_to_write.append(msg)
+                    _set_data(msg, vals2d)
+                    messages_to_write.append((var_name, msg))
         except Exception as e:
             logger.warning("Error preparing GRIB messages: %s", e)
             return
@@ -365,9 +379,13 @@ class Netcdf2Grib:
 
             try:
                 # Write all prepared messages
-                for msg in messages_to_write:
-                    msg.pack()  # g2c packing may use global state
-                    g2.write(msg)
+                # one bad field is skipped instead of truncating the rest of the file
+                for name, msg in messages_to_write:
+                    try:
+                        msg.pack()  # g2c packing may use global state
+                        g2.write(msg)
+                    except Exception as e:
+                        logger.warning("Skipping GRIB message %s: %s", name, e)
             except Exception as e:
                 logger.warning("Error writing GRIB messages: %s", e)
             finally:
