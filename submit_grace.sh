@@ -69,8 +69,7 @@ PMM_POLL_SECONDS="60"
 PMM_MIN_AGE_SECONDS="90"
 PMM_TIMEOUT_SECONDS="600"
 NETCDF2GRIB_SECTION3=
-WGRIB2=${WGRIB2:-"wgrib2"}   # from the conda env
-
+WGRIB2=${WGRIB2:-/scratch/user/michaelself/.conda/envs/wgrib2/bin/wgrib2}
 JOBDIR=$PACKAGEROOT/jobs/grace
 
 submit_with_check() {
