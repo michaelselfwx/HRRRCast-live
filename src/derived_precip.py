@@ -119,9 +119,24 @@ def write(path: str, template: xr.DataArray, fields: dict, extra_attrs: dict):
 REFERENCE_RUNS = ("hrrr",)   # non-ensemble runs (get_hrrr_fcst.py): accumulations only, no PMM
 
 
+def write_lpmm_grib(case_dir: str, init_dt, hh: str, h: int) -> None:
+    """hrrrcast.lpmm.tHHz.pgrb2.fHH next to the members' GRIB2, with the same writer and grid
+    (nc2grib.Netcdf2Grib via get_hrrr_fcst.nc_to_grib). It holds the 1-h APCP message, which
+    lines up with the members' APCP; APCP_TOT/6H/12H stay in the NetCDF file because the
+    writer has no GRIB2 code for multi-hour totals (they would look like 1-h APCP)."""
+    nc = os.path.join(case_dir, f"hrrrcast_lpmm_f{h:02d}.nc")
+    gb = os.path.join(case_dir, f"hrrrcast.lpmm.t{hh}z.pgrb2.f{h:02d}")
+    try:
+        from get_hrrr_fcst import nc_to_grib
+        if nc_to_grib(nc, gb, init_dt.isoformat(), h):
+            logger.info(f"Wrote {os.path.basename(gb)}")
+    except Exception as e:
+        logger.warning(f"{os.path.basename(gb)}: GRIB2 output failed ({e}); the NetCDF file is fine")
+
+
 def run(inittime: str, lead_hours: int, forecast_dir: str, patch: int, halo: int, smooth: float,
-        do_lpmm: bool):
-    _, y, mo, d, hh = utils.validate_datetime(inittime)
+        do_lpmm: bool, grib2: bool = True):
+    init_dt, y, mo, d, hh = utils.validate_datetime(inittime)
     case_dir = os.path.join(forecast_dir, f"{y}{mo}{d}", hh)
     members = [f"m{m:02d}" for m in find_members(case_dir)]
     refs = [r for r in REFERENCE_RUNS if os.path.exists(os.path.join(case_dir, f"hrrrcast_{r}_f01.nc"))]
@@ -179,6 +194,8 @@ def run(inittime: str, lead_hours: int, forecast_dir: str, patch: int, halo: int
                       {"processing_method": "local_probability_matched_mean",
                        "lpmm_patch_points": patch, "lpmm_halo_points": halo,
                        "lpmm_smooth_sigma": smooth})
+                if grib2:
+                    write_lpmm_grib(case_dir, init_dt, hh, h)
 
 
 def main():
@@ -191,12 +208,14 @@ def main():
     ap.add_argument("--lpmm_smooth", type=float, default=0.0,
                     help="Gaussian sigma (grid points) to soften tile seams; 0 = off")
     ap.add_argument("--no_lpmm", action="store_true", help="skip the LPMM products")
+    ap.add_argument("--no_grib2", action="store_true",
+                    help="do not write hrrrcast.lpmm.tHHz.pgrb2.fHH (GRIB2 of the LPMM 1-h APCP)")
     ap.add_argument("--log_level", default="INFO")
     a = ap.parse_args()
     setup_logging(a.log_level)
     try:
         run(a.inittime, a.lead_hours, a.forecast_dir, a.lpmm_patch, a.lpmm_halo, a.lpmm_smooth,
-            not a.no_lpmm)
+            not a.no_lpmm, not a.no_grib2)
     except Exception as e:
         logger.exception(f"derived_precip failed: {e}")
         sys.exit(1)

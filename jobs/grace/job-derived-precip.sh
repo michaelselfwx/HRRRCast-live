@@ -11,6 +11,7 @@ INIT_TIME="@[INIT_TIME]"
 PACKAGEROOT=@[PACKAGEROOT]
 DATAROOT=@[DATAROOT]
 LEAD_HOUR=@[LEAD_HOUR]
+export WGRIB2=@[WGRIB2]   # for the .idx of hrrrcast.lpmm.tHHz.pgrb2.fHH
 
 source ${PACKAGEROOT}/etc/env_grace.sh
 

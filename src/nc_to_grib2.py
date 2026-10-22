@@ -9,7 +9,7 @@ CONUS grid instead of the cropped one (and a wrong forecast hour), so they are r
 their grid does not match the NetCDF. Correct files are left alone (--overwrite redoes them).
 
 Usage:
-    python src/nc_to_grib2.py 2025-07-03T18 48 --base_dir $DATAROOT              # avg spr hrrr
+    python src/nc_to_grib2.py 2025-07-03T18 48 --base_dir $DATAROOT              # avg spr hrrr lpmm
     python src/nc_to_grib2.py 2025-07-03T18 48 --base_dir $DATAROOT --members avg spr
 Needs the NetCDF files (hrrrcast_<mem>_fHH.nc); the cleanup job deletes those, so for a
 cleaned-up case rerun compute_pmm.py from the member NetCDF files (if still there) instead.
@@ -55,7 +55,7 @@ def main():
     ap.add_argument("inittime", help="YYYY-MM-DDTHH")
     ap.add_argument("lead_hours", type=int, help="last forecast hour")
     ap.add_argument("--base_dir", default="./", help="data root (YYYYMMDD/HH/ under it)")
-    ap.add_argument("--members", nargs="+", default=["avg", "spr", "hrrr"])
+    ap.add_argument("--members", nargs="+", default=["avg", "spr", "hrrr", "lpmm"])
     ap.add_argument("--start_hour", type=int, default=0)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--overwrite", action="store_true", help="rewrite even correct GRIB2 files")
