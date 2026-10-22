@@ -133,6 +133,7 @@ if (!M || !M.cases || !Object.keys(M.cases).length){
 }
 
 // ---------- state ----------
+const DEFAULT_MEMBERS = ["hrrr", "m00", "lpmm"];
 const S = {case:null, domain:"tx", field:null, level:null, members:new Set(), idx:0, cols:"auto", focus:null, playing:false};
 let timer = null, leads = [], cache = {};
 
@@ -206,7 +207,11 @@ function fillLevels(){
 function fillMembers(){
   const c = caseObj(), box = $("members"); box.innerHTML = "";
   const avail = c.members;
-  if (![...S.members].some(m => avail.includes(m))) S.members = new Set(avail);
+  // default: HRRR, member 0 and the LPMM only (fewer images to load); "All" button shows the rest
+  if (![...S.members].some(m => avail.includes(m))) {
+    const d = DEFAULT_MEMBERS.filter(m => avail.includes(m));
+    S.members = new Set(d.length ? d : avail.slice(0, 1));
+  }
   for (const m of avail){
     const b = document.createElement("button");
     b.className = "chip" + (S.members.has(m) ? " on" : "");
