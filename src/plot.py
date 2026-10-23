@@ -644,6 +644,21 @@ class ForecastPlotter:
 # Corners are (lat, lon) of HRRR grid points (SW, SE, NE, NW), so the box follows the grid.
 DOMAINS = {
     "tx": None,
+    # The HRRRCast Texas grid (551 x 515) as a box of a bigger grid, e.g. to cut a CONUS run
+    # (or the full HRRR) down to it: python src/crop_grib.py ... --domains texas
+    # Exact HRRR grid points: rows 5-519, cols 536-1086 of the 1799 x 1059 CONUS grid.
+    # On a Texas run this box is the whole grid, so "tx" stays the default plot domain.
+    "texas": {
+        "label": "Texas (HRRRCast grid)",
+        "corners": [
+            (23.956558, -107.920515),  # SW
+            (24.352537, -92.122498),   # SE
+            (38.051994, -91.094207),   # NE
+            (37.566653, -109.896889),  # NW
+        ],
+        "pad": 0,
+        "county_lw": 0.12,
+    },
     # Harris County Flood Control District box (HRRR grid corners; TSC ft in the comments)
     "hcfcd": {
         "label": "HCFCD",

@@ -78,8 +78,25 @@ def box_from_bbox(lat, lon, bbox, pad):
 
 
 def find_wgrib2():
-    w = os.environ.get("WGRIB2", "wgrib2")
-    return shutil.which(w)
+    """$WGRIB2 or wgrib2 on PATH, but only if it actually runs (a conda wgrib2 built against a
+    different libg2c dies with "undefined symbol: g2c_enc_aec", exit status 127)."""
+    w = shutil.which(os.environ.get("WGRIB2", "wgrib2"))
+    if not w:
+        return None
+    # "wgrib2 -version" prints the version but exits non-zero, so only treat it as broken
+    # when it cannot start (missing library/symbol: exit 126/127 or a loader error message)
+    try:
+        r = subprocess.run([w, "-version"], capture_output=True, text=True, timeout=30)
+        out = (r.stdout + r.stderr).strip()
+        broken = (r.returncode in (126, 127) or "symbol lookup error" in out
+                  or "error while loading shared libraries" in out or not out)
+    except Exception as e:
+        broken, out = True, str(e)
+    if broken:
+        print(f"wgrib2 at {w} does not run ({out.splitlines()[-1] if out else 'no output'}); "
+              "set WGRIB2 to a working wgrib2", file=sys.stderr)
+        return None
+    return w
 
 
 def crop_wgrib2(wgrib2, src, dst, box):
@@ -172,6 +189,12 @@ def main():
     if a.engine == "wgrib2" and not wgrib2:
         sys.exit("wgrib2 not found (set $WGRIB2 or put it on PATH)")
     engine = "wgrib2" if wgrib2 else "eccodes"
+    if engine == "eccodes":
+        try:
+            import eccodes  # noqa: F401
+        except ImportError:
+            sys.exit("No working wgrib2 and no eccodes Python package: set WGRIB2 to a working "
+                     "wgrib2 (e.g. export WGRIB2=$HOME/.conda/envs/wgrib2/bin/wgrib2) or pip install eccodes")
 
     lat, lon = grid_of(files[0])
     targets = []
