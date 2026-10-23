@@ -6,14 +6,16 @@
 #   ./replot_grace.sh 2025-06-12T12 2026-10-03T16 2026-10-06T16
 #
 # One CPU job per case, which runs in order:
+#   0. grib2nc.py         only if the NetCDF was cleaned up: rebuild hrrrcast_{mNN,avg,spr}_fHH.nc
+#                         from the kept hrrrcast.*.pgrb2.fHH files (deleted again at the end)
 #   1. get_hrrr_fcst.py   operational HRRR of the same cycle (skips hours already downloaded)
 #   2. derived_precip.py  run-total / 6 h / 12 h precip and LPMM
 #   3. compute_pmm.py     ensemble spread (and PMM/mean), if 2+ members and not done yet
 #   4. plot.py            hrrr, m00..m(N-1), avg (LPMM precip), spr on the tx and hcfcd domains
-#   5. make_viewer_index.py
-# The lead hours and member count are read from the hrrrcast_mNN_fHH.nc files in each case.
-# If those were deleted (cleanup job) but the hrrrcast.mNN.tHHz.pgrb2.fHH files are there, the
-# case is done HRRR-only: fetch, precip and plots for the operational HRRR, cropped to the same grid.
+# Afterwards run src/make_viewer_index.py yourself (the jobs don't) to refresh the viewer.
+# The lead hours and member count are read from the hrrrcast_mNN_fHH.nc files in each case, or,
+# if those were deleted (cleanup job), from the hrrrcast.mNN.tHHz.pgrb2.fHH files (step 0).
+# With FROM_GRIB=NO such a case is done HRRR-only instead.
 #
 # Environment knobs (same names as submit_grace.sh where they overlap):
 #   DATAROOT           data root (default $SCRATCH/hrrrcast-data)
@@ -23,7 +25,9 @@
 #   PLOT_PRODUCTS      default: REFC APCP* CAPE T2M WIND_10M MSLMA HLCY_0_3km HGT_500hPa
 #   PLOT_LPMM          NO (default) / YES   also plot the stand-alone LPMM precip panels ("lpmm")
 #   REDO_PMM           NO (default) / YES   rerun compute_pmm even if the spread files exist
-#   REMOVE_AVG_PLOTS   NO (default) / YES   delete old avg_ plot folders so they leave the viewer
+#   REMOVE_AVG_PLOTS   NO (default) / YES   delete old avg_ plot folders before replotting
+#   FROM_GRIB          YES (default) / NO   rebuild cleaned-up NetCDF from the GRIB2 output (step 0)
+#   KEEP_NC            NO (default) / YES   keep the rebuilt / derived NetCDF files afterwards
 #   REPLOT_WALLTIME    default 02:00:00
 #   DRYRUN=1           write the job scripts but don't submit them
 
@@ -34,6 +38,8 @@ PLOT_DOMAINS=${HRRRCAST_PLOT_DOMAINS:-tx hcfcd}
 PLOT_PRODUCTS=${PLOT_PRODUCTS:-REFC APCP* PWAT CAPE}
 PLOT_LPMM=${PLOT_LPMM:-NO}
 REDO_PMM=${REDO_PMM:-NO}
+FROM_GRIB=${FROM_GRIB:-YES}
+KEEP_NC=${KEEP_NC:-NO}
 REMOVE_AVG_PLOTS=${REMOVE_AVG_PLOTS:-NO}
 REPLOT_WALLTIME=${REPLOT_WALLTIME:-02:00:00}
 
@@ -57,6 +63,13 @@ for INIT in "$@"; do
     # members = hrrrcast_mNN_f01.nc present; lead = last hour of m00 (or the first member found)
     MEMBERS=$(ls "$CASE_DIR"/hrrrcast_m[0-9][0-9]_f01.nc 2>/dev/null | sed -E 's/.*_m([0-9]+)_f01\.nc/\1/' | sort -n)
     HRRR_ONLY=NO
+    REBUILD=NO
+    if [ -z "$MEMBERS" ] && [ "$FROM_GRIB" == "YES" ]; then
+        # NetCDF deleted by the cleanup job: rebuild it from the kept GRIB2 (grib2nc.py in the job)
+        MEMBERS=$(ls "$CASE_DIR"/hrrrcast.m[0-9][0-9].t${HH}z.pgrb2.f01 2>/dev/null \
+                  | sed -E 's/.*hrrrcast\.m([0-9]+)\.t.*/\1/' | sort -n)
+        [ -n "$MEMBERS" ] && REBUILD=YES
+    fi
     if [ -z "$MEMBERS" ]; then
         # NetCDF deleted by the cleanup job: the GRIB2 output is still enough to crop the HRRR to
         # the HRRRCast domain and to know the lead time, so do the HRRR (only) for this case
@@ -71,8 +84,14 @@ for INIT in "$@"; do
     else
         N=$(echo "$MEMBERS" | wc -l)
         FIRST=$(echo "$MEMBERS" | head -1)
+        if [ "$REBUILD" == "YES" ]; then
+            LEAD=$(ls "$CASE_DIR"/hrrrcast.m${FIRST}.t${HH}z.pgrb2.f[0-9]* 2>/dev/null | grep -E 'pgrb2\.f[0-9]+$' \
+                   | sed -E 's/.*pgrb2\.f0*([0-9]+)$/\1/' | sort -n | tail -1)
+            echo "$INIT: no HRRRCast NetCDF (cleaned up?) -> rebuilding $N members (+ avg/spr) from GRIB2, f01-f$LEAD"
+        else
         LEAD=$(ls "$CASE_DIR"/hrrrcast_m${FIRST}_f[0-9][0-9]*.nc 2>/dev/null | grep -E '_f[0-9]+\.nc$' \
                | sed -E 's/.*_f([0-9]+)\.nc/\1/' | sort -n | tail -1 | sed 's/^0*//')
+        fi
         MEMLIST=$(echo "$MEMBERS" | sed 's/^0*\([0-9]\)/\1/' | paste -sd' ')
         NMAX=$(( 10#$(echo "$MEMBERS" | tail -1) + 1 ))     # compute_pmm looks for m00..m(NMAX-1)
     fi
@@ -98,6 +117,12 @@ for INIT in "$@"; do
 source ${PACKAGEROOT}/etc/env_grace.sh
 module load WebProxy 2>/dev/null || echo "WebProxy module not loaded; downloads may fail"
 cd ${DATAROOT}
+
+if [ "${REBUILD}" == "YES" ]; then
+    # NetCDF was cleaned up: rebuild members, avg and spr from the kept GRIB2 output
+    python ${PACKAGEROOT}/src/grib2nc.py ${INIT} --forecast_dir ${DATAROOT} --workers 16 \\
+        || echo "WARNING: grib2nc had failures; some hours/members may be missing"
+fi
 echo "Replot ${INIT}: ${N} members (${MEMLIST}), f01-f${LEAD}, plotting: ${PLOT_MEMBERS}; domains: ${PLOT_DOMAINS}"
 
 if [ "${RUNHRRR}" == "YES" ]; then
@@ -124,6 +149,12 @@ fi
 
 python ${PACKAGEROOT}/src/plot.py ${INIT} ${LEAD} --members ${PLOT_MEMBERS} --domains ${PLOT_DOMAINS} \\
     --products ${PRODUCT_ARGS}--forecast_dir ${DATAROOT} --output_dir ${DATAROOT}
+
+if [ "${REBUILD}" == "YES" ] && [ "${KEEP_NC}" != "YES" ]; then
+    # back to the cleaned-up state: only the hrrrcast.*.pgrb2* files (and plots) stay
+    find ${CASE_DIR} -maxdepth 1 -type f \\( -name 'hrrrcast_*.nc' -o -name 'hrrrcast_*.nc.tmp' \\) -delete
+    echo "Removed the rebuilt / derived NetCDF files (KEEP_NC=YES keeps them)"
+fi
 
 JOBEOF
 
