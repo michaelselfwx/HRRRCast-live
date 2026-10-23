@@ -757,10 +757,21 @@ def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, i
     # accumulated precipitation from derived_precip.py, if it has been run
     precip_path = ds_path.replace(f"_f{h:02d}.nc", f"_precip_f{h:02d}.nc")
     dsp = None
-    if member != "lpmm" and os.path.exists(precip_path):
+    precip_label = ""
+    lpmm_path = ds_path.replace(f"hrrrcast_avg_f{h:02d}.nc", f"hrrrcast_lpmm_f{h:02d}.nc")
+    if member == "avg" and os.path.exists(lpmm_path):
+        # Ensemble product: compute_pmm's mean (PMM for REFC) for every field, but take the
+        # precipitation (1-h APCP and the run-total / 6-h / 12-h sums) from the local PMM.
+        dsp = xr.open_dataset(lpmm_path, decode_timedelta=True)
+        if "APCP" in ds and "APCP" in dsp:
+            ds["APCP"] = (ds["APCP"].dims, np.asarray(dsp["APCP"].values).reshape(ds["APCP"].shape),
+                          ds["APCP"].attrs)
+        precip_label = " (local PMM)"
+    elif member != "lpmm" and os.path.exists(precip_path):
         dsp = xr.open_dataset(precip_path, decode_timedelta=True)
         if member == "hrrr":
             dsp = crop_like_members(dsp, ds_path)
+        precip_label = " (PMM)" if member == "avg" else ""
     try:
         timestamp_str = f"{init_year}-{init_month}-{init_day} {init_hh}:00 UTC"
         for dom in (config.domains or ["tx"]):
@@ -787,8 +798,7 @@ def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, i
                 if dsp is not None:
                     dspd = domain_view(dsp, dom)[0]
                     if dspd is not None:
-                        label = " (PMM)" if member == "avg" else ""
-                        plotter.plot_derived_precip(dspd, h, output_subdir, timestamp_str, label=label)
+                        plotter.plot_derived_precip(dspd, h, output_subdir, timestamp_str, label=precip_label)
             logging.info(f"Plots for lead hour {h} ({dom}) saved to: {output_subdir}")
     finally:
         ds.close()

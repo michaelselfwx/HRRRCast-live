@@ -9,7 +9,7 @@
 #   1. get_hrrr_fcst.py   operational HRRR of the same cycle (skips hours already downloaded)
 #   2. derived_precip.py  run-total / 6 h / 12 h precip and LPMM
 #   3. compute_pmm.py     ensemble spread (and PMM/mean), if 2+ members and not done yet
-#   4. plot.py            hrrr, m00..m(N-1), lpmm, spr on the tx and hcfcd domains
+#   4. plot.py            hrrr, m00..m(N-1), avg (LPMM precip), spr on the tx and hcfcd domains
 #   5. make_viewer_index.py
 # The lead hours and member count are read from the hrrrcast_mNN_fHH.nc files in each case.
 # If those were deleted (cleanup job) but the hrrrcast.mNN.tHHz.pgrb2.fHH files are there, the
@@ -21,7 +21,7 @@
 #   RUNHRRR            YES (default) / NO   fetch + plot the operational HRRR
 #   HRRRCAST_PLOT_DOMAINS   default "tx hcfcd"
 #   PLOT_PRODUCTS      default: REFC APCP* CAPE T2M WIND_10M MSLMA HLCY_0_3km HGT_500hPa
-#   PLOT_AVG           NO (default) / YES   also plot the ensemble PMM/mean ("avg")
+#   PLOT_LPMM          NO (default) / YES   also plot the stand-alone LPMM precip panels ("lpmm")
 #   REDO_PMM           NO (default) / YES   rerun compute_pmm even if the spread files exist
 #   REMOVE_AVG_PLOTS   NO (default) / YES   delete old avg_ plot folders so they leave the viewer
 #   REPLOT_WALLTIME    default 02:00:00
@@ -32,7 +32,7 @@ DATAROOT=${DATAROOT:-$SCRATCH/hrrrcast-data}
 RUNHRRR=${RUNHRRR:-YES}
 PLOT_DOMAINS=${HRRRCAST_PLOT_DOMAINS:-tx hcfcd}
 PLOT_PRODUCTS=${PLOT_PRODUCTS:-REFC APCP* PWAT CAPE}
-PLOT_AVG=${PLOT_AVG:-NO}
+PLOT_LPMM=${PLOT_LPMM:-NO}
 REDO_PMM=${REDO_PMM:-NO}
 REMOVE_AVG_PLOTS=${REMOVE_AVG_PLOTS:-NO}
 REPLOT_WALLTIME=${REPLOT_WALLTIME:-02:00:00}
@@ -78,8 +78,8 @@ for INIT in "$@"; do
     fi
     PLOT_MEMBERS="$MEMLIST"
     if (( N >= 2 )); then
-        PLOT_MEMBERS="$PLOT_MEMBERS lpmm spr"
-        [ "$PLOT_AVG" == "YES" ] && PLOT_MEMBERS="$PLOT_MEMBERS avg"
+        PLOT_MEMBERS="$PLOT_MEMBERS avg spr"
+        [ "$PLOT_LPMM" == "YES" ] && PLOT_MEMBERS="$PLOT_MEMBERS lpmm"
     fi
     [ "$RUNHRRR" == "YES" ] && PLOT_MEMBERS="hrrr $PLOT_MEMBERS"
     PLOT_MEMBERS=$(echo $PLOT_MEMBERS)   # tidy spaces

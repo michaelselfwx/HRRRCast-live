@@ -122,7 +122,7 @@ const NAMES = {
   VGRD_0C:"V wind at 0 °C", WIND_0C:"Wind at 0 °C", DU_SFC_0C:"ΔU sfc–0 °C", DV_SFC_0C:"ΔV sfc–0 °C",
   SHEAR_SFC_0C:"Shear sfc–0 °C", WARM_LAYER_DEPTH:"Warm layer depth", COLD_LAYER_DEPTH:"Cold layer depth"
 };
-const memLabel = m => m === "hrrr" ? "HRRR (operational)" : m === "avg" ? "PMM / mean" : m === "lpmm" ? "Local PMM (APCP only)" : m === "spr" ? "Spread" : "Member " + parseInt(m.slice(1),10);
+const memLabel = m => m === "hrrr" ? "HRRR (operational)" : m === "avg" ? "Ensemble mean (PMM REFC, LPMM precip)" : m === "lpmm" ? "Local PMM (APCP only)" : m === "spr" ? "Spread" : "Member " + parseInt(m.slice(1),10);
 
 if (!M || !M.cases || !Object.keys(M.cases).length){
   document.querySelector("footer").hidden = true;
@@ -133,7 +133,7 @@ if (!M || !M.cases || !Object.keys(M.cases).length){
 }
 
 // ---------- state ----------
-const DEFAULT_MEMBERS = ["hrrr", "m00", "lpmm"];
+const DEFAULT_MEMBERS = ["hrrr", "m00", "avg"];
 const S = {case:null, domain:"tx", field:null, level:null, members:new Set(), idx:0, cols:"auto", focus:null, playing:false};
 let timer = null, leads = [], cache = {};
 
@@ -215,7 +215,7 @@ function fillMembers(){
   for (const m of avail){
     const b = document.createElement("button");
     b.className = "chip" + (S.members.has(m) ? " on" : "");
-    b.textContent = m === "hrrr" ? "HRRR" : m === "avg" ? "PMM" : m === "lpmm" ? "LPMM" : m === "spr" ? "spread" : parseInt(m.slice(1),10);
+    b.textContent = m === "hrrr" ? "HRRR" : m === "avg" ? "mean" : m === "lpmm" ? "LPMM" : m === "spr" ? "spread" : parseInt(m.slice(1),10);
     b.title = memLabel(m);
     b.onclick = () => { S.members.has(m) ? S.members.delete(m) : S.members.add(m);
                         if (!S.members.size) S.members.add(m); S.focus = null; refresh(); };
