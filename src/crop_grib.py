@@ -99,15 +99,23 @@ def find_wgrib2():
     return w
 
 
+# wgrib2 from conda is built with OpenMP and by default starts one thread per CPU in every
+# process, so N parallel crops ran N x (all CPUs) threads: every core busy and much slower
+# from the oversubscription. Each wgrib2 gets WGRIB2_THREADS threads (default 1) and
+# --workers sets how many run at once.
+WGRIB2_ENV = {**os.environ, "OMP_NUM_THREADS": os.environ.get("WGRIB2_THREADS", "1")}
+
+
 def crop_wgrib2(wgrib2, src, dst, box):
     r0, r1, c0, c1 = box                                   # wgrib2 i/j are 1-based, j=1 south
     tmp = dst + ".tmp"
     subprocess.run([wgrib2, src, "-set_grib_type", "same",
                     "-ijsmall_grib", f"{c0 + 1}:{c1 + 1}", f"{r0 + 1}:{r1 + 1}", tmp],
-                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=WGRIB2_ENV)
     os.replace(tmp, dst)
     with open(dst + ".idx", "w") as f:                     # inventory, like the originals
-        subprocess.run([wgrib2, dst, "-s"], check=True, stdout=f, stderr=subprocess.DEVNULL)
+        subprocess.run([wgrib2, dst, "-s"], check=True, stdout=f, stderr=subprocess.DEVNULL,
+                       env=WGRIB2_ENV)
 
 
 def crop_eccodes(src, dst, box, lat, lon):
@@ -243,7 +251,13 @@ def main():
                 failed += 1
                 print(f"  FAILED {name}/{os.path.basename(src)}: {e}", file=sys.stderr)
     print(f"Done: {done} written, {skipped} already there, {failed} failed")
-    sys.exit(1 if failed else 0)
+    # Exit without interpreter cleanup: with the eccodes engine, pygrib's bundled copy of the
+    # ecCodes library and the eccodes package's copy are both loaded, and their shutdown
+    # handlers free the same memory ("double free or corruption", core dump). All output
+    # files are closed and checked by now.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(1 if failed else 0)
 
 
 if __name__ == "__main__":
