@@ -660,8 +660,8 @@ DOMAINS = {
         "county_lw": 0.12,
     },
     # Harris County Flood Control District box (HRRR grid corners; TSC ft in the comments)
-    "hcfcd": {
-        "label": "HCFCD",
+    "hcfcd_hrrr": {
+        "label": "HCFCD (HRRR)",
         "corners": [
             (29.340298, -96.144918),   # SW  X 2,877,994.82  Y 13,682,372.01
             (29.312892, -94.739308),   # SE  X 3,325,953.48  Y 13,686,035.04
@@ -685,6 +685,10 @@ DOMAINS = {
 }
 
 
+# old names still accepted (plots then go to the new folder name)
+DOMAIN_ALIASES = {"hcfcd": "hcfcd_hrrr"}
+
+
 def parse_domains(values) -> List[str]:
     if not values:
         return ["tx"]
@@ -693,6 +697,7 @@ def parse_domains(values) -> List[str]:
     out = []
     for v in values:
         for d in v.replace(",", " ").lower().split():
+            d = DOMAIN_ALIASES.get(d, d)
             if d not in DOMAINS:
                 raise ValueError(f"Unknown domain '{d}' (known: {', '.join(DOMAINS)})")
             if d not in out:

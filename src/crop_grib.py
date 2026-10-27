@@ -7,7 +7,7 @@ a sub-box of the grid (same Lambert projection, same messages, same packing):
 
     YYYYMMDD/HH/<domain>/hrrrcast.<mem>.tHHz.pgrb2.fHH
 
-Domains: any name from plot.py DOMAINS (e.g. hcfcd: Harris County box), or your own box with
+Domains: any name from plot.py DOMAINS (e.g. hcfcd_hrrr / hcfcd_href: Harris County boxes, texas), or your own box with
 --bbox lat_min,lat_max,lon_min,lon_max --name myname. The box is cut along the model grid:
 the smallest grid rectangle that contains the domain corners (plus --pad points).
 
@@ -16,9 +16,9 @@ eccodes Python library (pip install eccodes). Every output file is checked: its 
 size and corner lat/lon must match the requested box.
 
 Usage:
-  python src/crop_grib.py 2026-10-03T16 --forecast_dir $SCRATCH/hrrrcast-data --domains hcfcd
+  python src/crop_grib.py 2026-10-03T16 --forecast_dir $SCRATCH/hrrrcast-data --domains hcfcd_hrrr hcfcd_href
   python src/crop_grib.py 2026-10-03T16 --forecast_dir ... --bbox 29.5,30.2,-95.9,-94.9 --name houston
-  python src/crop_grib.py 2026-10-03T16 --forecast_dir ... --domains hcfcd --members m00 m01 avg
+  python src/crop_grib.py 2026-10-03T16 --forecast_dir ... --domains hcfcd_hrrr --members m00 m01 avg
 """
 
 import argparse
@@ -165,7 +165,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inittime", help="YYYY-MM-DDTHH")
     ap.add_argument("--forecast_dir", default="./", help="data root (YYYYMMDD/HH/ under it)")
-    ap.add_argument("--domains", nargs="+", default=[], help="named domains from plot.py DOMAINS, e.g. hcfcd")
+    ap.add_argument("--domains", nargs="+", default=[], help="named domains from plot.py DOMAINS, e.g. hcfcd_hrrr hcfcd_href texas")
     ap.add_argument("--bbox", default=None, help="lat_min,lat_max,lon_min,lon_max for a custom box")
     ap.add_argument("--name", default="bbox", help="folder name for --bbox (default: bbox)")
     ap.add_argument("--pad", type=int, default=0, help="extra grid points around the box (default 0)")
@@ -200,7 +200,8 @@ def main():
     targets = []
     if a.domains:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from plot import DOMAINS
+        from plot import DOMAINS, DOMAIN_ALIASES
+        a.domains = [DOMAIN_ALIASES.get(d.lower(), d.lower()) for d in a.domains]
         for d in a.domains:
             spec = DOMAINS.get(d.lower())
             if not spec:

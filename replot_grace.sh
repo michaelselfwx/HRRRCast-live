@@ -11,7 +11,7 @@
 #   1. get_hrrr_fcst.py   operational HRRR of the same cycle (skips hours already downloaded)
 #   2. derived_precip.py  run-total / 6 h / 12 h precip and LPMM
 #   3. compute_pmm.py     ensemble spread (and PMM/mean), if 2+ members and not done yet
-#   4. plot.py            hrrr, m00..m(N-1), avg (LPMM precip), spr on the tx and hcfcd domains
+#   4. plot.py            hrrr, m00..m(N-1), avg (LPMM precip), spr on the tx and hcfcd_hrrr domains
 # Afterwards run src/make_viewer_index.py yourself (the jobs don't) to refresh the viewer.
 # The lead hours and member count are read from the hrrrcast_mNN_fHH.nc files in each case, or,
 # if those were deleted (cleanup job), from the hrrrcast.mNN.tHHz.pgrb2.fHH files (step 0).
@@ -21,7 +21,7 @@
 #   DATAROOT           data root (default $SCRATCH/hrrrcast-data)
 #   ACCNR              HPRC account number
 #   RUNHRRR            YES (default) / NO   fetch + plot the operational HRRR
-#   HRRRCAST_PLOT_DOMAINS   default "tx hcfcd"
+#   HRRRCAST_PLOT_DOMAINS   default "tx hcfcd_hrrr"
 #   PLOT_PRODUCTS      default: REFC APCP* CAPE T2M WIND_10M MSLMA HLCY_0_3km HGT_500hPa
 #   PLOT_LPMM          NO (default) / YES   also plot the stand-alone LPMM precip panels ("lpmm")
 #   REDO_PMM           NO (default) / YES   rerun compute_pmm even if the spread files exist
@@ -34,7 +34,7 @@
 PACKAGEROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DATAROOT=${DATAROOT:-$SCRATCH/hrrrcast-data}
 RUNHRRR=${RUNHRRR:-YES}
-PLOT_DOMAINS=${HRRRCAST_PLOT_DOMAINS:-tx hcfcd}
+PLOT_DOMAINS=${HRRRCAST_PLOT_DOMAINS:-tx hcfcd_hrrr}
 PLOT_PRODUCTS=${PLOT_PRODUCTS:-REFC APCP* PWAT CAPE}
 PLOT_LPMM=${PLOT_LPMM:-NO}
 REDO_PMM=${REDO_PMM:-NO}

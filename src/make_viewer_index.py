@@ -3,7 +3,7 @@
 Build the HRRRCast forecast viewer.
 
 Scans plot.py output (<base_dir>/YYYYMMDD/HH/<member>_leadNNh/<PRODUCT>_leadNNh.png, and
-<base_dir>/YYYYMMDD/HH/<domain>/<member>_leadNNh/... for extra plot domains such as hcfcd),
+<base_dir>/YYYYMMDD/HH/<domain>/<member>_leadNNh/... for extra plot domains such as hcfcd_hrrr),
 writes <base_dir>/viewer_manifest.js describing what exists, and copies the viewer page
 to <base_dir>/viewer.html.
 
@@ -71,7 +71,7 @@ def member_sort_key(m: str):
     return (2, 0)
 
 
-DOMAIN_RE = re.compile(r"^[a-z][a-z0-9_]*$")   # plot.py --domains subfolders, e.g. hcfcd/
+DOMAIN_RE = re.compile(r"^[a-z][a-z0-9_]*$")   # plot.py --domains subfolders, e.g. hcfcd_hrrr/
 DEFAULT_DOMAIN = "tx"                          # plots directly in YYYYMMDD/HH/
 
 

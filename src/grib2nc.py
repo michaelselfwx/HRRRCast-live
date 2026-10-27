@@ -81,6 +81,11 @@ def build_lookup():
             sfc[(disc, cat, num, stype, int(sval[0]), int(sval[1]))] = var
         else:                                        # single level (value 0 when None)
             sfc[(disc, cat, num, stype, int(sval or 0), None)] = var
+    # nc2grib.py sets msg.discipline but grib2io writes discipline 0 into section 0, so LAND
+    # (discipline 2 "land surface", 0/0) comes out of the files as 0/0/0 at the surface,
+    # i.e. "surface temperature" (values are the 0-1 land fraction). No real variable uses that
+    # code, so read it back as LAND.
+    sfc.setdefault((0, 0, 0, 1, 0, None), "LAND")
     return sfc, pl
 
 
@@ -152,7 +157,7 @@ def convert_one(grib_path, nc_path, init_dt, hour):
     ds.to_netcdf(tmp, encoding=get_cf_encoding(ds, init_dt), engine=utils.netcdf_engine())
     os.replace(tmp, nc_path)
     return f"{os.path.basename(nc_path)}: {len(sfc)} sfc + {len(pl)} pl vars" + \
-        (f" ({len(skipped)} unknown msgs skipped)" if skipped else "")
+        (f" ({len(skipped)} unknown msgs skipped: {', '.join(skipped[:5])})" if skipped else "")
 
 
 def parse_hours(spec, available):

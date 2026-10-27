@@ -20,6 +20,11 @@ Notes/assumptions:
   downstream consumers.
 - Member IDs: Each member forecast can be written independently, allowing per-member
   outputs with consistent naming conventions.
+- Encoder: messages are encoded with ecCodes through pygrib by default
+  (NETCDF2GRIB_ENGINE=eccodes). NETCDF2GRIB_ENGINE=grib2io uses the original grib2io path,
+  which writes discipline 0 for every field (so LAND, discipline 2, comes out as surface TMP).
+- Index: the .idx (wgrib2 -s style inventory) is written in Python from the encoded messages,
+  so wgrib2 is not needed. NETCDF2GRIB_INDEX=wgrib2 runs $WGRIB2 -s instead; =none skips it.
 """
 
 import os
@@ -31,7 +36,11 @@ from typing import Optional, Tuple
 
 import numpy as np
 import xarray as xr
-import grib2io
+
+try:  # only needed for NETCDF2GRIB_ENGINE=grib2io
+    import grib2io
+except Exception:  # pragma: no cover
+    grib2io = None
 
 from cf_attributes import VARIABLE_METADATA
 from utils import setup_logging
@@ -60,6 +69,155 @@ GRIB_PARAM_MAP = {
     for var, meta in VARIABLE_METADATA.items()
     if "grib2" in meta
 }
+
+
+ENGINE = os.environ.get("NETCDF2GRIB_ENGINE", "eccodes").lower()
+INDEX = os.environ.get("NETCDF2GRIB_INDEX", "python").lower()
+
+# 200-byte GRIB2 message (Lambert conformal 3.30, PDT 4.0, simple packing) used as the starting
+# point for every message; all keys that matter are overwritten in _encode_eccodes.
+_TEMPLATE_B64 = (
+    "R1JJQv//AAIAAAAAAAAAyAAAABUBAAcAAAIBAQfXAxcMAAAAAQAAAFEDAAAAAAQAAAAeAQAAYTed////////////"
+    "/wAAAAIAAAACAUKKyw4knNgIAkt2oA+lbqAALcbAAC3GwABAAkt2oAJLdqAAAAAAAAAAAAAAACIEAAAAAAAAAv+A"
+    "AAAAAQAAAAAB//////////////8AAAAVBQAAAAQAAAAAAACAFgAAGAAAAAAGBv8AAAARBwAAAEAAAIAAAMAAADc3Nzc="
+)
+
+# NCEP abbreviations and wgrib2-style level names, for the .idx inventory
+_ABBR = {
+    (0, 0, 0): "TMP", (0, 0, 2): "POT", (0, 0, 6): "DPT",
+    (0, 1, 0): "SPFH", (0, 1, 1): "RH", (0, 1, 3): "PWAT", (0, 1, 8): "APCP",
+    (0, 1, 33): "CRAIN", (0, 1, 34): "CFRZR",
+    (0, 2, 1): "WIND", (0, 2, 2): "UGRD", (0, 2, 3): "VGRD", (0, 2, 8): "VVEL", (0, 2, 12): "RELV",
+    (0, 2, 15): "VUCSH", (0, 2, 16): "VVCSH", (0, 2, 22): "GUST", (0, 2, 194): "USTM",
+    (0, 2, 195): "VSTM", (0, 2, 220): "MAXUVV", (0, 2, 221): "MAXDVV",
+    (0, 3, 0): "PRES", (0, 3, 5): "HGT", (0, 3, 198): "MSLMA",
+    (0, 6, 1): "TCDC", (0, 6, 3): "LCDC", (0, 6, 4): "MCDC", (0, 6, 5): "HCDC",
+    (0, 7, 6): "CAPE", (0, 7, 7): "CIN", (0, 7, 8): "HLCY", (0, 7, 199): "MXUPHL", (0, 7, 200): "MNUPHL",
+    (0, 16, 196): "REFC", (0, 19, 0): "VIS", (2, 0, 0): "LAND",
+}
+_LEVEL_NAMES = {1: "surface", 4: "0C isotherm", 10: "entire atmosphere", 101: "mean sea level",
+                214: "low cloud layer", 215: "cloud ceiling", 224: "middle cloud layer",
+                234: "high cloud layer"}
+
+
+def _level_text(stype, value) -> str:
+    """wgrib2-style level description."""
+    if isinstance(value, tuple):
+        a, b = value
+        if stype == 100:
+            return f"{a / 100:g}-{b / 100:g} mb"
+        return f"{a:g}-{b:g} m above ground" if stype == 103 else f"{a:g}-{b:g} level {stype}"
+    if stype == 100:
+        return f"{(value or 0) / 100:g} mb"
+    if stype == 103:
+        return f"{value or 0:g} m above ground"
+    return _LEVEL_NAMES.get(stype, f"level type {stype} {value or 0:g}")
+
+
+def _precision(var_name: str, surface_value) -> Tuple[int, int]:
+    """(decimal scale factor, spatial differencing order) per variable."""
+    sv = surface_value if not isinstance(surface_value, tuple) else None
+    if var_name in ("SPFH", "SPFH_0C", "SPFH2M"):
+        if sv and 5000 <= sv <= 10000:
+            dec = 12
+        elif sv and 15000 <= sv <= 40000:
+            dec = 10
+        else:
+            dec = 8
+    elif var_name == "PWAT":
+        dec = 3      # precipitable water: 0-80 mm
+    elif var_name in ("CRAIN", "CFRZR", "APCP"):
+        dec = 4      # small hourly precipitation amounts
+    elif var_name in ("VUCSH_0_1km", "VVCSH_0_1km", "VUCSH_0_6km", "VVCSH_0_6km",
+                      "RELV_max_0_1km", "RELV_max_0_2km"):
+        dec = 5      # shear / vorticity in 1/s
+    else:
+        dec = 2
+    order = 0 if var_name in ("VIS", "HGTCC") else 2   # no differencing for discontinuous fields
+    return dec, order
+
+
+def _put(msg, key, value) -> None:
+    """Set a key on a pygrib message; code-table keys only take strings in pygrib."""
+    try:
+        msg[key] = value
+    except TypeError:
+        msg[key] = str(value)
+
+
+def _encode_eccodes(section3, ref_time: datetime, lead_hour: int, var_name: str,
+                    surface_type: int, surface_value, vals2d) -> bytes:
+    """One GRIB2 message with ecCodes (through pygrib, which bundles ecCodes)."""
+    import base64
+    import pygrib
+
+    s3 = [int(v) for v in section3]
+    disc, cat, num, _, _ = GRIB_PARAM_MAP[var_name]
+    dec, order = _precision(var_name, surface_value)
+    arr = np.asarray(vals2d, dtype=np.float64)
+    ny, nx = arr.shape
+    if (s3[12], s3[13]) != (nx, ny):
+        raise ValueError(f"{var_name}: data {ny}x{nx} does not match the grid {s3[13]}x{s3[12]}")
+
+    m = pygrib.fromstring(base64.b64decode(_TEMPLATE_B64))
+    for key, val in (
+        # section 0/1
+        ("discipline", disc), ("centre", 7), ("subCentre", 0), ("tablesVersion", 2),
+        ("localTablesVersion", 1), ("significanceOfReferenceTime", 1),
+        ("dataDate", ref_time.year * 10000 + ref_time.month * 100 + ref_time.day),
+        ("dataTime", ref_time.hour * 100 + ref_time.minute),
+        ("productionStatusOfProcessedData", 0), ("typeOfProcessedData", 1),
+        # section 3 (template 3.30, same integers as the grib2io Section 3 array)
+        ("shapeOfTheEarth", s3[5]), ("scaleFactorOfRadiusOfSphericalEarth", s3[6]),
+        ("scaledValueOfRadiusOfSphericalEarth", s3[7]), ("Nx", nx), ("Ny", ny),
+        ("latitudeOfFirstGridPoint", s3[14]), ("longitudeOfFirstGridPoint", s3[15]),
+        ("resolutionAndComponentFlags", s3[16]), ("LaD", s3[17]), ("LoV", s3[18]),
+        ("Dx", s3[19]), ("Dy", s3[20]), ("projectionCentreFlag", s3[21]), ("scanningMode", s3[22]),
+        ("Latin1", s3[23]), ("Latin2", s3[24]),
+        # section 4 (template 4.0)
+        ("parameterCategory", cat), ("parameterNumber", num), ("typeOfGeneratingProcess", 2),
+        ("indicatorOfUnitForForecastTime", 1), ("forecastTime", int(lead_hour)),
+    ):
+        _put(m, key, val)
+
+    _put(m, "typeOfFirstFixedSurface", surface_type)
+    _put(m, "scaleFactorOfFirstFixedSurface", 0)
+    if isinstance(surface_value, tuple):
+        _put(m, "scaledValueOfFirstFixedSurface", int(surface_value[0]))
+        _put(m, "typeOfSecondFixedSurface", surface_type)
+        _put(m, "scaleFactorOfSecondFixedSurface", 0)
+        _put(m, "scaledValueOfSecondFixedSurface", int(surface_value[1]))
+    else:
+        _put(m, "scaledValueOfFirstFixedSurface", int(surface_value or 0))
+        _put(m, "typeOfSecondFixedSurface", 255)
+
+    # packing: complex (+ 2nd-order spatial differencing) with enough bits for 10^-dec precision.
+    # pygrib only sees keys that exist when it parses a message, so re-parse after changing
+    # the packing type.
+    _put(m, "packingType", "grid_complex_spatial_differencing" if order else "grid_complex")
+    m = pygrib.fromstring(m.tostring())
+    if order:
+        _put(m, "orderOfSpatialDifferencing", order)
+    finite = arr[np.isfinite(arr)]
+    span = float(finite.max() - finite.min()) * 10.0 ** dec if finite.size else 0.0
+    nbits = int(np.ceil(np.log2(span + 1.0))) + 1 if span > 0 else 0
+    _put(m, "decimalScaleFactor", dec)
+    _put(m, "bitsPerValue", min(nbits, 32))
+    if finite.size < arr.size:            # NaN -> missing via bitmap
+        m["values"] = np.ma.masked_invalid(arr).ravel()
+    else:
+        m["values"] = arr.ravel()
+    return m.tostring()
+
+
+def _write_python_index(outfile: str, entries) -> None:
+    """wgrib2 -s style inventory: n:offset:d=YYYYMMDDHH:ABBR:level:time:"""
+    with open(f"{outfile}.idx", "w") as f:
+        for i, (offset, ref_time, lead, var_name, stype, sval) in enumerate(entries, start=1):
+            disc, cat, num, _, _ = GRIB_PARAM_MAP[var_name]
+            abbr = _ABBR.get((disc, cat, num), f"var discipline={disc} cat={cat} num={num}")
+            when = "anl" if int(lead) == 0 else f"{int(lead)} hour fcst"
+            f.write(f"{i}:{offset}:d={ref_time:%Y%m%d%H}:{abbr}:{_level_text(stype, sval)}:{when}:\n")
 
 
 class Netcdf2Grib:
@@ -190,7 +348,7 @@ class Netcdf2Grib:
         surface_value: Optional[float] = None,
         pdtn: Optional[int] = None,
         drtn: Optional[int] = None,
-    ) -> grib2io.Grib2Message:
+    ) -> "grib2io.Grib2Message":
 
         # 1. Define Section 1 (Identification Section)
         section1 = np.array([
@@ -259,35 +417,9 @@ class Netcdf2Grib:
         msg.typeOfStatisticalProcessing = 0
         msg.numberOfTimeRanges = 0
 
-        # 6. Adjust decimal scale factor to improve precision for select variables
+        # 6./7. Decimal scale factor and spatial differencing order (shared with the ecCodes path)
         msg.binaryScaleFactor = 0
-        if var_name == "SPFH" or var_name == "SPFH_0C" or var_name == "SPFH2M":
-            if surface_value and surface_value >= 5000 and surface_value <= 10000:
-                msg.decScaleFactor = 12
-            elif surface_value and surface_value >= 15000 and surface_value <= 40000:
-                msg.decScaleFactor = 10
-            else:
-                msg.decScaleFactor = 8
-        elif var_name in ["PWAT"]:
-            # Precipitable water: typically 0-80 mm, use higher precision
-            msg.decScaleFactor = 3
-        elif var_name in ["CRAIN", "CFRZR", "APCP"]:
-            # Precipitation: typically small values in mm/hr, use high precision
-            msg.decScaleFactor = 4
-        elif var_name in ["VUCSH_0_1km", "VVCSH_0_1km", "VUCSH_0_6km", "VVCSH_0_6km"]:
-            # Wind shear: typically small values (1/s), use high precision
-            msg.decScaleFactor = 5
-        elif var_name in ["RELV_max_0_1km", "RELV_max_0_2km"]:
-            # Relative vorticity: typically 1e-3 to 1e-2 s^-1, use high precision
-            msg.decScaleFactor = 5
-        else:
-            msg.decScaleFactor = 2
-
-        # 7. Spatial differencing order (disable for discontinuous fields like visibility)
-        if var_name in ["VIS", "HGTCC"]:
-            msg.spatialDifferenceOrder = 0
-        else:
-            msg.spatialDifferenceOrder = 2
+        msg.decScaleFactor, msg.spatialDifferenceOrder = _precision(var_name, surface_value)
 
         return msg
 
@@ -298,25 +430,21 @@ class Netcdf2Grib:
         return surface_type, surface_value
 
     def save_grib2(self, forecast_starttime: datetime, ds_hour: xr.Dataset, output_path: str) -> None:
-        """Write a single-hour GRIB2 file from an xarray.Dataset using grib2io.
+        """Write a single-hour GRIB2 file from an xarray.Dataset.
 
         ds_hour is expected to have dims (lead_time=1, time=1, [level], y, x) and contain
-        both pressure-level and surface variables.
+        both pressure-level and surface variables. Encoded with ecCodes (default) or grib2io
+        (NETCDF2GRIB_ENGINE=grib2io); a .idx inventory is written next to it.
         """
-        # Extract lead hour
         try:
             lead = int(np.asarray(ds_hour["lead_time"]).item())
         except Exception:
             lead = 0
-
         outfile = output_path
 
-        # Prepare all messages outside the lock (parallel-safe operations)
-        # This includes dataset iteration, numpy operations, and message building
-        messages_to_write = []
-
+        # (label, var_name, surface_type, surface_value, 2-D values) for every message
+        specs = []
         try:
-            # Ensure y,x dims exist (rename from latitude/longitude if needed)
             ds_loc = ds_hour
             if "y" not in ds_loc.dims or "x" not in ds_loc.dims:
                 if "latitude" in ds_loc.dims and "longitude" in ds_loc.dims:
@@ -324,81 +452,76 @@ class Netcdf2Grib:
                 else:
                     logger.warning("Dataset missing y/x dims; attempting to infer from data variable shapes.")
 
-            # Loop over variables in sorted order for stable output
             for var_name in sorted(ds_loc.data_vars):
                 da = ds_loc[var_name]
                 if var_name not in GRIB_PARAM_MAP:
                     logger.debug(f"Skipping unknown variable {var_name}")
                     continue
-
                 surface_type, surface_value = self._get_surface_type_and_value(var_name, ds_loc, da)
-
-                # Pressure-level variables
                 if "level" in da.coords:
                     for level in np.atleast_1d(da["level"].values):
-                        # Ensure pressure level is in Pa (convert from hPa/mb if necessary)
                         plevel = float(level)
-                        if plevel < 2000:  # assume provided in hPa
+                        if plevel < 2000:  # hPa -> Pa
                             plevel *= 100.0
-                        msg = self._build_message(var_name, forecast_starttime, lead, surface_type=100, surface_value=plevel)
-                        # Expect data shape (lead_time=1, time=1, level=1, y, x) or (lead_time=1, level=1, y, x)
-                        # Squeeze removes singleton dimensions regardless of order
                         vals = np.squeeze(da.sel(level=level).values)
-                        # Slice out time/lead if present
-                        if vals.ndim == 4:
-                            vals2d = vals[0, 0, :, :]
-                        elif vals.ndim == 3:
-                            vals2d = vals[0, :, :]
-                        else:
-                            vals2d = vals
-                        _set_data(msg, vals2d)
-                        messages_to_write.append((f"{var_name}:{plevel / 100:g}hPa", msg))
+                        while vals.ndim > 2:
+                            vals = vals[0]
+                        specs.append((f"{var_name}:{plevel / 100:g}hPa", var_name, 100, plevel, vals))
                 else:
-                    msg = self._build_message(var_name, forecast_starttime, lead, surface_type=surface_type, surface_value=surface_value)
                     vals = np.squeeze(da.values)
-                    if vals.ndim == 3:
-                        vals2d = vals[0, 0, :, :]
-                    elif vals.ndim == 2:
-                        vals2d = vals
-                    else:
-                        vals2d = np.squeeze(vals)
-                    _set_data(msg, vals2d)
-                    messages_to_write.append((var_name, msg))
+                    while vals.ndim > 2:
+                        vals = vals[0]
+                    specs.append((var_name, var_name, surface_type, surface_value, vals))
         except Exception as e:
             logger.warning("Error preparing GRIB messages: %s", e)
             return
 
-        # Now serialize the grib2io operations (g2c library may not be thread-safe)
+        index_entries = []
+        # Serialize the encoding/writing (ecCodes / g2c may not be thread-safe)
         with self._grib2io_lock:
-            # Remove existing file if present
             if os.path.isfile(outfile):
                 os.remove(outfile)
+            if ENGINE == "grib2io":
+                if grib2io is None:
+                    raise RuntimeError("NETCDF2GRIB_ENGINE=grib2io but grib2io is not installed")
+                g2 = grib2io.open(outfile, mode="w")
+                try:
+                    for name, var_name, stype, sval, vals in specs:
+                        try:
+                            msg = self._build_message(var_name, forecast_starttime, lead,
+                                                      surface_type=stype, surface_value=sval)
+                            _set_data(msg, vals)
+                            msg.pack()
+                            g2.write(msg)
+                        except Exception as e:
+                            logger.warning("Skipping GRIB message %s: %s", name, e)
+                finally:
+                    g2.close()
+            else:
+                offset = 0
+                with open(outfile, "wb") as fout:
+                    for name, var_name, stype, sval, vals in specs:
+                        try:
+                            raw = _encode_eccodes(self.section3, forecast_starttime, lead, var_name,
+                                                  stype, sval, vals)
+                        except Exception as e:  # one bad field is skipped, not the whole file
+                            logger.warning("Skipping GRIB message %s: %s", name, e)
+                            continue
+                        fout.write(raw)
+                        index_entries.append((offset, forecast_starttime, lead, var_name, stype, sval))
+                        offset += len(raw)
 
-            # Open GRIB2 file for writing
-            g2 = grib2io.open(outfile, mode="w")
-
-            try:
-                # Write all prepared messages
-                # one bad field is skipped instead of truncating the rest of the file
-                for name, msg in messages_to_write:
-                    try:
-                        msg.pack()  # g2c packing may use global state
-                        g2.write(msg)
-                    except Exception as e:
-                        logger.warning("Skipping GRIB message %s: %s", name, e)
-            except Exception as e:
-                logger.warning("Error writing GRIB messages: %s", e)
-            finally:
-                g2.close()
-
-        # Optionally create an index via wgrib2 if available
+        # Index: Python inventory by default; wgrib2 -s on request (or for the grib2io path)
+        if INDEX == "none":
+            return
         try:
-            wgrib2 = os.environ.get("WGRIB2", "wgrib2")
-            idxfile = f"{outfile}.idx"
             t0 = time.time()
-            with open(idxfile, "w") as f_out:
-                subprocess.run([wgrib2, "-s", outfile], stdout=f_out, check=True)
-            t1 = time.time()
-            logger.info(f"Index created in {t1 - t0:.2f}s: {idxfile}")
+            if INDEX == "wgrib2" or ENGINE == "grib2io":
+                wgrib2 = os.environ.get("WGRIB2", "wgrib2")
+                with open(f"{outfile}.idx", "w") as f_out:
+                    subprocess.run([wgrib2, "-s", outfile], stdout=f_out, check=True)
+            else:
+                _write_python_index(outfile, index_entries)
+            logger.info(f"Index created in {time.time() - t0:.2f}s: {outfile}.idx")
         except Exception as e:
-            logger.warning(f"Skipping index creation with wgrib2: {e}")
+            logger.warning(f"Skipping index creation: {e}")

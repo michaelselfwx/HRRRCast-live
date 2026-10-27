@@ -144,7 +144,7 @@ function splitProduct(p){
 }
 // manifest: cases[case].domains[domain] = {members, memdirs, leads, products, prefix}
 // (older manifests have no "domains": the case object itself is the single domain)
-const DOMAIN_NAMES = {tx:"TX", hcfcd:"HCFCD (Harris Co.)"};
+const DOMAIN_NAMES = {tx:"TX", hcfcd_hrrr:"HCFCD (HRRR)", hcfcd_href:"HCFCD (HREF)", texas:"Texas", hcfcd:"HCFCD (Harris Co.)"};   // hcfcd = folder name before the rename
 // own-key lookup only: values from the URL (#c=..., #p=...) must never resolve to
 // inherited properties such as "__proto__" or "constructor"
 const own = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
