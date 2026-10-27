@@ -71,6 +71,7 @@ def member_sort_key(m: str):
     return (2, 0)
 
 
+HIDDEN_MEMBERS = ("lpmm", "spr")   # plotted folders the viewer does not list (see scan_dir)
 DOMAIN_RE = re.compile(r"^[a-z][a-z0-9_]*$")   # plot.py --domains subfolders, e.g. hcfcd_hrrr/
 DEFAULT_DOMAIN = "tx"                          # plots directly in YYYYMMDD/HH/
 
@@ -101,6 +102,21 @@ def scan_dir(folder: Path, products=None) -> dict:
         members[mem] = prefix
         for prod, ls in found[(mem, prefix)].items():
             case_prods.setdefault(prod, {})[mem] = ls
+    # One ensemble button: "avg" = PMM for REFC, mean for other fields, LPMM for precip
+    # (plot.py puts the LPMM precip in the avg folders). Stand-alone LPMM and spread panels
+    # are not offered; an older case that has LPMM plots but no avg shows its LPMM as "avg".
+    if "avg" not in members and "lpmm" in members:
+        members["avg"] = members.pop("lpmm")
+        for v in case_prods.values():
+            if "lpmm" in v:
+                v["avg"] = v.pop("lpmm")
+    for hidden in HIDDEN_MEMBERS:
+        members.pop(hidden, None)
+        for v in case_prods.values():
+            v.pop(hidden, None)
+    case_prods = {p: v for p, v in case_prods.items() if v}
+    for v in case_prods.values():
+        for ls in v.values():
             leads |= ls
     if not case_prods:
         return {}

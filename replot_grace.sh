@@ -11,7 +11,8 @@
 #   1. get_hrrr_fcst.py   operational HRRR of the same cycle (skips hours already downloaded)
 #   2. derived_precip.py  run-total / 6 h / 12 h precip and LPMM
 #   3. compute_pmm.py     ensemble spread (and PMM/mean), if 2+ members and not done yet
-#   4. plot.py            hrrr, m00..m(N-1), avg (LPMM precip), spr on the tx and hcfcd_hrrr domains
+#   4. plot.py            hrrr, m00..m(N-1), avg (LPMM precip) on the tx and hcfcd_hrrr domains
+#                         (the spread is computed but not plotted)
 # Afterwards run src/make_viewer_index.py yourself (the jobs don't) to refresh the viewer.
 # The lead hours and member count are read from the hrrrcast_mNN_fHH.nc files in each case, or,
 # if those were deleted (cleanup job), from the hrrrcast.mNN.tHHz.pgrb2.fHH files (step 0).
@@ -97,7 +98,7 @@ for INIT in "$@"; do
     fi
     PLOT_MEMBERS="$MEMLIST"
     if (( N >= 2 )); then
-        PLOT_MEMBERS="$PLOT_MEMBERS avg spr"
+        PLOT_MEMBERS="$PLOT_MEMBERS avg"
         [ "$PLOT_LPMM" == "YES" ] && PLOT_MEMBERS="$PLOT_MEMBERS lpmm"
     fi
     [ "$RUNHRRR" == "YES" ] && PLOT_MEMBERS="hrrr $PLOT_MEMBERS"
@@ -136,7 +137,7 @@ python ${PACKAGEROOT}/src/derived_precip.py ${INIT} ${LEAD} --forecast_dir ${DAT
 if (( ${N} >= 2 )); then
     if [ "${REDO_PMM}" == "YES" ] || [ ! -f ${CASE_DIR}/hrrrcast_spr_f\$(printf %02d ${LEAD}).nc ]; then
         python ${PACKAGEROOT}/src/compute_pmm.py ${INIT} ${LEAD} --forecast_dir ${DATAROOT} --output_dir ${DATAROOT} \\
-            --n_ensembles ${NMAX} --no_wait || echo "WARNING: compute_pmm failed; spread plots will be missing"
+            --n_ensembles ${NMAX} --no_wait || echo "WARNING: compute_pmm failed; ensemble mean (avg) plots will be missing"
     else
         echo "Spread files already there; skipping compute_pmm (REDO_PMM=YES to redo)"
     fi

@@ -122,7 +122,7 @@ const NAMES = {
   VGRD_0C:"V wind at 0 °C", WIND_0C:"Wind at 0 °C", DU_SFC_0C:"ΔU sfc–0 °C", DV_SFC_0C:"ΔV sfc–0 °C",
   SHEAR_SFC_0C:"Shear sfc–0 °C", WARM_LAYER_DEPTH:"Warm layer depth", COLD_LAYER_DEPTH:"Cold layer depth"
 };
-const memLabel = m => m === "hrrr" ? "HRRR (operational)" : m === "avg" ? "Ensemble mean (PMM REFC, LPMM precip)" : m === "lpmm" ? "Local PMM (APCP only)" : m === "spr" ? "Spread" : "Member " + parseInt(m.slice(1),10);
+const memLabel = m => m === "hrrr" ? "HRRR (operational)" : m === "avg" ? "Ensemble mean (PMM for REFC, LPMM for precip)" : m === "lpmm" ? "Local PMM (APCP only)" : m === "spr" ? "Spread" : "Member " + parseInt(m.slice(1),10);
 
 if (!M || !M.cases || !Object.keys(M.cases).length){
   document.querySelector("footer").hidden = true;

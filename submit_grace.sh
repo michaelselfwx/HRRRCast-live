@@ -14,9 +14,11 @@
 #   GET_BCS_EXTRA extra get_bcs.py args, e.g. "--stitch_cycles" for pre-2021 cases
 #   RUNHRRR      YES (default) to also fetch the operational HRRR forecast of the same cycle
 #                as member "hrrr" (verification / side-by-side in the viewer); NO to skip
-#   PLOT_LPMM    NO (default) / YES: also plot the stand-alone LPMM precip panels ("lpmm").
+#   PLOT_LPMM    NO (default) / YES: also plot the stand-alone LPMM precip panels ("lpmm";
+#                not shown in the viewer, whose "mean" already uses the LPMM for precip).
 #                Plotted by default: hrrr, m00..m(N-1), avg (ensemble mean; PMM for REFC,
-#                local PMM for precip), spr (spread); avg/spr need 2+ members
+#                local PMM for precip; needs 2+ members). The spread (spr) is still computed
+#                (NetCDF/GRIB2) but no longer plotted.
 #   FCST_WALLTIME / PMM_WALLTIME / ...  override any walltime below
 #   HRRRCAST_CONDA_SH / HRRRCAST_CONDA_ENV  where conda lives / env name (etc/env_grace.sh)
 
@@ -139,13 +141,13 @@ if [ "$RUNPLOT" == "YES" ]; then
 fi
 
 # Ensemble products (need 2+ members): LPMM from derived_precip, spread ("spr") and PMM/mean
-# ("avg") from compute_pmm. Plotted: avg (with LPMM precip) + spr, plus lpmm with PLOT_LPMM=YES.
+# ("avg") from compute_pmm. Plotted: avg (with LPMM precip), plus lpmm with PLOT_LPMM=YES.
 if [ $N_ENSEMBLES -ge 2 ]; then
     atparse < $JOBDIR/job-compute-pmm.sh > logs/job-compute-pmm.sh
     jobid7=$(sb --dependency=$FCST_DONE logs/job-compute-pmm.sh) || exit 1; echo "Submitted compute_pmm: $jobid7"
     last_jobid=$jobid7
-    ENS_PLOT_MEMBERS="avg spr"
-    [ "$PLOT_LPMM" == "YES" ] && ENS_PLOT_MEMBERS="avg lpmm spr"
+    ENS_PLOT_MEMBERS="avg"
+    [ "$PLOT_LPMM" == "YES" ] && ENS_PLOT_MEMBERS="avg lpmm"
     ENS_PLOT_DEP="afterok:$jobid7:$jobidD"
     if [ "$RUNPLOT" == "YES" ]; then
         atparse PLOT_MEMBERS="$ENS_PLOT_MEMBERS" < $JOBDIR/job-plot.sh > logs/job-plot-ens.sh
