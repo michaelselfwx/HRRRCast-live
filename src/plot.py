@@ -248,9 +248,9 @@ class ForecastPlotter:
         ax.add_feature(cfeature.BORDERS, linewidth=0.5, zorder=3)
         ax.add_feature(cfeature.STATES, linewidth=0.3, zorder=3)
         outline = getattr(self.config, "outline", None)
-        if outline:
-            ax.plot(outline[0], outline[1], color="black", linewidth=1.0, linestyle="--",
-                    transform=ccrs.PlateCarree(), zorder=4)
+        # if outline:
+        #     ax.plot(outline[0], outline[1], color="black", linewidth=1.0, linestyle="--",
+        #             transform=ccrs.PlateCarree(), zorder=4)
         if not getattr(self.config, "counties", False):
             return
         if ForecastPlotter._counties_feature is None:
@@ -817,19 +817,21 @@ def plot_forecast_data(datetime_str: str,
                       products: Optional[List[str]] = None,
                       counties: Optional[bool] = None,
                       domains: Optional[List[str]] = None):
-    """Main plotting function. Plots all hours from 1 to lead_hour (inclusive) in parallel."""
+    """Main plotting function. Plots hours 1..lead_hour of one member, or of a list of members,
+    in one process pool (every member x hour is a task), so all allocated cores stay busy.
+    Workers: $HRRRCAST_PLOT_WORKERS, else $SLURM_CPUS_PER_TASK, else the CPU count."""
     try:
         # Validate inputs
         init_datetime, init_year, init_month, init_day, init_hh = utils.validate_datetime(datetime_str)
         date_str = f"{init_year}{init_month}{init_day}/{init_hh}"
         lead_hour_int = int(lead_hour)
-        
-        # Normalize 'pmm' alias to 'avg'
-        if member == "pmm":
-            member = "avg"
-        mem_str = str(member)
-        if mem_str not in {"avg", "spr", "lpmm", "hrrr"}:
-            mem_str = f"m{int(member):02d}"
+
+        mem_strs = []
+        for member in ([member] if isinstance(member, str) else list(member)):
+            if member == "pmm":         # 'pmm' alias -> 'avg'
+                member = "avg"
+            m = str(member)
+            mem_strs.append(m if m in {"avg", "spr", "lpmm", "hrrr"} else f"m{int(m):02d}")
 
         # Initialize plotter config (for passing to subprocesses)
         config = ForecastPlotterConfig()
@@ -844,17 +846,22 @@ def plot_forecast_data(datetime_str: str,
             config.counties = ensure_county_shapes()
         config_dict = config.__dict__
         
-        n_workers = lead_hour_int
-        logger.info(f"Parallel plotting using {n_workers} workers (one per lead hour)")
-        # Parallel plotting over lead hours
+        # every (member, lead hour) is one task
         args_list = []
-        for h in range(1, lead_hour_int + 1):
-            # Build per-hour file path
-            ds_path = f"{forecast_dir}/{date_str}/hrrrcast_{mem_str}_f{h:02d}.nc"
-            if not os.path.exists(ds_path):
-                logger.warning(f"Skipping hour f{h:02d}: file not found {ds_path}")
-                continue
-            args_list.append((h, ds_path, init_datetime, init_year, init_month, init_day, init_hh, output_dir, date_str, mem_str, config_dict))
+        for mem_str in mem_strs:
+            for h in range(1, lead_hour_int + 1):
+                ds_path = f"{forecast_dir}/{date_str}/hrrrcast_{mem_str}_f{h:02d}.nc"
+                if not os.path.exists(ds_path):
+                    logger.warning(f"Skipping {mem_str} f{h:02d}: file not found {ds_path}")
+                    continue
+                args_list.append((h, ds_path, init_datetime, init_year, init_month, init_day, init_hh,
+                                  output_dir, date_str, mem_str, config_dict))
+        cores = int(os.environ.get("HRRRCAST_PLOT_WORKERS")
+                    or os.environ.get("SLURM_CPUS_PER_TASK") or os.cpu_count() or 1)
+        n_workers = max(1, min(cores, len(args_list)))
+        logger.info(f"Plotting {len(args_list)} member-hours ({' '.join(mem_strs)}) with {n_workers} workers")
+        if not args_list:
+            return
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = [executor.submit(plot_lead_hour, *args) for args in args_list]
             for future in as_completed(futures):
@@ -862,7 +869,7 @@ def plot_forecast_data(datetime_str: str,
                     future.result()
                 except Exception as e:
                     logger.error(f"Error in parallel plotting: {e}")
-        logger.info(f"Plotting completed successfully for all hours 1 to {lead_hour_int}.")
+        logger.info(f"Plotting completed for {' '.join(mem_strs)}, hours 1 to {lead_hour_int}.")
         
     except Exception as e:
         logger.error(f"Plotting failed: {e}")
@@ -960,11 +967,11 @@ def main():
             sys.exit(1)
         logger.info(f"Domains: {' '.join(domains)}")
 
-        for member in members:
+        if True:   # all members in one pool
             plot_forecast_data(
                 datetime_str=args.inittime,
                 lead_hour=args.lead_hour,
-                member=member,
+                member=members,
                 zoom_extent=zoom_extent,
                 forecast_dir=args.forecast_dir,
                 output_dir=args.output_dir,

@@ -29,6 +29,8 @@
 #   REMOVE_AVG_PLOTS   NO (default) / YES   delete old avg_ plot folders before replotting
 #   FROM_GRIB          YES (default) / NO   rebuild cleaned-up NetCDF from the GRIB2 output (step 0)
 #   KEEP_NC            NO (default) / YES   keep the rebuilt / derived NetCDF files afterwards
+#   ONLY_PLOT          plot just these runs, e.g. "avg" or "avg spr" (default: hrrr, all members, avg)
+#   REPLOT_CPUS        cores for the job (default 48); plotting and grib2nc use all of them
 #   REPLOT_WALLTIME    default 02:00:00
 #   DRYRUN=1           write the job scripts but don't submit them
 
@@ -43,9 +45,11 @@ FROM_GRIB=${FROM_GRIB:-YES}
 KEEP_NC=${KEEP_NC:-NO}
 REMOVE_AVG_PLOTS=${REMOVE_AVG_PLOTS:-NO}
 REPLOT_WALLTIME=${REPLOT_WALLTIME:-02:00:00}
+REPLOT_CPUS=${REPLOT_CPUS:-48}
+ONLY_PLOT=${ONLY_PLOT:-}
 
 if [ $# -eq 0 ]; then
-    sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
 fi
 # quote each product for the job script; no wildcard expansion here (APCP* is for plot.py)
@@ -102,6 +106,7 @@ for INIT in "$@"; do
         [ "$PLOT_LPMM" == "YES" ] && PLOT_MEMBERS="$PLOT_MEMBERS lpmm"
     fi
     [ "$RUNHRRR" == "YES" ] && PLOT_MEMBERS="hrrr $PLOT_MEMBERS"
+    [ -n "$ONLY_PLOT" ] && PLOT_MEMBERS="$ONLY_PLOT"
     PLOT_MEMBERS=$(echo $PLOT_MEMBERS)   # tidy spaces
 
     JOB="$DATAROOT/logs/job-replot-${YMD}${HH}.sh"
@@ -111,7 +116,7 @@ for INIT in "$@"; do
 #SBATCH --output=${DATAROOT}/logs/replot_${YMD}${HH}_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=48
+#SBATCH --cpus-per-task=${REPLOT_CPUS}
 #SBATCH --mem=360G
 #SBATCH --time=${REPLOT_WALLTIME}
 
@@ -121,7 +126,7 @@ cd ${DATAROOT}
 
 if [ "${REBUILD}" == "YES" ]; then
     # NetCDF was cleaned up: rebuild members, avg and spr from the kept GRIB2 output
-    python ${PACKAGEROOT}/src/grib2nc.py ${INIT} --forecast_dir ${DATAROOT} --workers 16 \\
+    python ${PACKAGEROOT}/src/grib2nc.py ${INIT} --forecast_dir ${DATAROOT} --workers ${REPLOT_CPUS} \\
         || echo "WARNING: grib2nc had failures; some hours/members may be missing"
 fi
 echo "Replot ${INIT}: ${N} members (${MEMLIST}), f01-f${LEAD}, plotting: ${PLOT_MEMBERS}; domains: ${PLOT_DOMAINS}"
