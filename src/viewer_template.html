@@ -3,122 +3,229 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HRRRCast Ensemble Viewer</title>
+<title>HRRRCast-TX Viewer</title>
 <script>
-// theme before first paint: dark by default, light if the viewer picked it last time
-(function(){ var t = "dark";
-  try { if (localStorage.getItem("hrrrcast-theme") === "light") t = "light"; } catch(e) {}
-  document.documentElement.setAttribute("data-theme", t); })();
-</script>
-<style>
-:root{
-  --bg:#0f1216; --panel:#171b21; --panel2:#1e232b; --line:#2a313b; --text:#e6e9ee; --muted:#9aa4b2;
-  --accent:#4ea1ff; --accent-ink:#06121f; --warn:#f0b04c; color-scheme:dark;
+// Colours follow the computer's light / dark setting unless the viewer picked the other one
+// with the title-bar button (remembered in this browser). Picking the same as the computer
+// again clears the override, so the page goes back to following the system setting.
+var HRRRCAST_THEME = (function(){
+  var root = document.documentElement, KEY = "hrrrcast-theme";
+  var mq = window.matchMedia ? window.matchMedia("(prefers-color-scheme: light)") : null;
+  var system = function(){ return mq && mq.matches ? "light" : "dark"; };
+  var saved = function(){ try { var v = localStorage.getItem(KEY); return v === "light" || v === "dark" ? v : null; } catch(e) { return null; } };
+  var listeners = [];
+  var apply = function(){ root.setAttribute("data-theme", saved() || system()); listeners.forEach(function(f){ f(); }); };
+  apply();                                            // before first paint
+  if (mq){ if (mq.addEventListener) mq.addEventListener("change", apply); else if (mq.addListener) mq.addListener(apply); }
+  return {
+    toggle: function(){
+      var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      try { if (next === system()) localStorage.removeItem(KEY); else localStorage.setItem(KEY, next); } catch(e) {}
+      root.setAttribute("data-theme", next); listeners.forEach(function(f){ f(); });
+    },
+    onChange: function(f){ listeners.push(f); f(); }
+  };
+})();
+// title-bar logos: logos/<name>.svg, else .png / .webp / .jpg, else the logo is hidden
+function logoFallback(img){
+  var exts = ["svg", "png", "webp", "jpg"], m = img.src.match(/\.(\w+)$/),
+      i = m ? exts.indexOf(m[1].toLowerCase()) : -1;
+  if (i >= 0 && i < exts.length - 1) img.src = img.src.replace(/\.\w+$/, "." + exts[i + 1]);
+  else img.parentNode.remove();
 }
-:root[data-theme="light"]{ --bg:#f4f6f9; --panel:#ffffff; --panel2:#eef1f5; --line:#d6dbe3; --text:#16191d;
-  --muted:#5b6573; --accent:#1f6fd1; --accent-ink:#ffffff; --warn:#a96a00; color-scheme:light; }
-#theme{display:flex;align-items:center;justify-content:center;padding:4px 6px}
-#theme svg{width:16px;height:16px;display:block}
-#theme .sun{display:none}
-:root[data-theme="dark"] #theme .sun{display:block}
-:root[data-theme="dark"] #theme .moon{display:none}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Roboto+Condensed:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+/* Layout after the classic NWP model-page pattern: maroon title bar, product list on the
+   left, forecast-hour strip across the top of the maps, square boxed panels. */
+:root{
+  --maroon:#500000; --bar-ink:#f3ece4;
+  --bg:#161616; --panel:#202020; --panel2:#2b2b2b; --line:#3e3e3e; --text:#e6e6e6; --muted:#9b9b9b;
+  --accent:#b8473f; --accent-ink:#ffffff; --hot:#d9b45a; color-scheme:dark;
+  --sans:"Roboto Condensed","Arial Narrow",Arial,sans-serif;
+  --mono:"IBM Plex Mono",Consolas,"Liberation Mono",monospace;
+}
+:root[data-theme="light"]{
+  --bg:#d6d5d0; --panel:#ffffff; --panel2:#ecebe6; --line:#a8a7a1; --text:#141414; --muted:#55544f;
+  --accent:#500000; --accent-ink:#ffffff; --hot:#8a5a00; color-scheme:light;
+}
 *{box-sizing:border-box}
-html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
-  font:14px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-header{position:sticky;top:0;z-index:5;background:var(--panel);border-bottom:1px solid var(--line);
-  padding:8px 12px;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
-header h1{font-size:15px;margin:0 8px 0 0;font-weight:650;letter-spacing:.2px}
-.ctl{display:flex;align-items:center;gap:6px}
-.ctl label{color:var(--muted);font-size:12px}
-select,button{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);
-  border-radius:6px;padding:4px 8px}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--text);font:13px/1.3 var(--sans);
+  display:grid;grid-template-columns:236px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+button,select{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);
+  border-radius:0;padding:3px 7px}
 button{cursor:pointer}
-button:hover,select:hover{border-color:var(--accent)}
+button:hover:not(:disabled),select:hover{border-color:var(--text)}
+button:disabled{opacity:.45;cursor:default}
 button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
-.chips{display:flex;flex-wrap:wrap;gap:4px}
-.chip{padding:2px 8px;border-radius:999px;font-size:12px}
-.spacer{flex:1}
-#grid{display:grid;gap:8px;padding:10px 12px 96px}
-.cell{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;
-  display:flex;flex-direction:column;min-width:0}
-.cell .lbl{padding:4px 8px;font-size:12px;color:var(--muted);display:flex;justify-content:space-between;
-  border-bottom:1px solid var(--line);background:var(--panel2)}
-.cell .lbl b{color:var(--text);font-weight:600}
+
+/* title bar */
+#top{grid-column:1/-1;background:var(--maroon);color:var(--bar-ink);display:flex;align-items:center;
+  gap:22px;padding:0 0 0 16px;min-height:64px;border-bottom:4px solid #2c0000}
+.brand{display:flex;align-items:baseline;gap:10px;white-space:nowrap}
+.logos{display:flex;align-items:center;gap:16px;align-self:stretch;padding:8px 0}
+.logos a{display:flex;align-items:center;height:100%}
+.logos img{display:block;height:44px;width:auto}
+.logos a + a{padding-left:16px;border-left:1px solid rgba(255,255,255,.3)}
+.brand{flex-direction:column;align-items:flex-start;gap:1px}
+.brand .mark{font-weight:700;font-size:28px;letter-spacing:.6px;line-height:1.05}
+.brand .sub{font-size:12.5px;opacity:.8;text-transform:uppercase;letter-spacing:1px}
+#time{margin-left:auto;font:15px var(--mono);white-space:nowrap}
+#theme{background:transparent;color:var(--bar-ink);border:0;border-left:1px solid rgba(255,255,255,.25);
+  align-self:stretch;padding:0 18px;font-size:12.5px;text-transform:uppercase;letter-spacing:.8px}
+#theme:hover{background:rgba(255,255,255,.08)}
+#time b{font-weight:600;color:#fff}
+
+/* left column */
+#side{background:var(--panel2);border-right:1px solid var(--line);overflow-y:auto;padding-bottom:10px}
+#side section{padding:8px 10px 10px;border-bottom:1px solid var(--line)}
+#side h2{margin:0 0 6px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.1px;
+  color:var(--muted);display:flex;justify-content:space-between;align-items:center}
+#side select{width:100%}
+#field{height:17.5em;padding:0;background:var(--panel)}
+#field:focus,#field:focus-visible{outline:none;border-color:var(--line)}
+#field option{padding:2px 6px;color:var(--text);text-transform:none;font-weight:400;font-size:13px}
+#field optgroup{font-style:normal;font-weight:700;font-size:11px;color:var(--muted);text-transform:uppercase}
+#field option:checked{background:var(--accent) linear-gradient(var(--accent),var(--accent));color:var(--accent-ink)}
+.row{display:flex;align-items:center;gap:6px;margin-top:6px}
+.row label{color:var(--muted);min-width:52px}
+.row select{flex:1}
+.link{background:none;border:0;padding:0;color:var(--accent);font-size:11px;text-transform:uppercase;
+  letter-spacing:1px;font-weight:700}
+:root[data-theme="dark"] .link{color:var(--hot)}
+.link:hover{text-decoration:underline}
+.links{display:flex;gap:12px}
+.pick{grid-column:1/-1;color:var(--muted);padding:40px 10px;font-size:13px}
+#members{display:grid;grid-template-columns:1fr 1fr;gap:0}
+.chip{display:flex;align-items:center;gap:6px;background:none;border:0;padding:3px 2px;text-align:left;
+  white-space:nowrap}
+.chip::before{content:"";flex:none;width:10px;height:10px;border:1px solid var(--muted);background:var(--panel)}
+.chip.on{background:none;color:var(--text)}
+.chip.on::before{background:var(--accent);border-color:var(--accent);box-shadow:inset 0 0 0 2px var(--panel)}
+.chip:hover{text-decoration:underline}
+.help dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:2px 8px;font-size:12px;color:var(--muted)}
+.help dt{font-family:var(--mono);font-size:11px;color:var(--text)}
+.help dd{margin:0}
+#gen{margin:8px 0 0;font:11px var(--mono);color:var(--muted)}
+
+/* forecast-hour bar */
+main{overflow-y:auto;min-width:0;display:flex;flex-direction:column}
+#bar{position:sticky;top:0;z-index:4;background:var(--panel2);border-bottom:1px solid var(--line);
+  display:flex;align-items:stretch;gap:8px;padding:6px 10px}
+.ctrls{display:flex;flex:none}
+.ctrls > *{margin-left:-1px}
+#play{min-width:56px;font-weight:600}
+#hours{display:flex;overflow-x:auto;flex:1;min-width:0;scrollbar-width:thin}
+#hours button{flex:none;min-width:36px;margin-left:-1px;padding:3px 4px;font:11px var(--mono);text-align:center}
+#hours button.d0{border-left:2px solid var(--hot)}
+#hours button.on{position:relative;z-index:1}
+#load{flex:none;align-self:center;font:11px var(--mono);color:var(--muted);min-width:90px;text-align:right}
+
+/* map panels */
+#grid{display:grid;gap:6px;padding:8px 10px 14px}
+.cell{background:var(--panel);border:1px solid var(--line);display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.cell .lbl{padding:3px 8px;font-size:12px;display:flex;justify-content:space-between;gap:8px;
+  background:var(--panel2);border-bottom:1px solid var(--line)}
+.cell .lbl b{font-weight:700;text-transform:uppercase;letter-spacing:.6px;font-size:11.5px}
+.cell .lbl span{font:11px var(--mono);color:var(--muted)}
 .cell .img{position:relative;flex:1;display:flex;align-items:center;justify-content:center;cursor:zoom-in;
-  min-height:120px;background:var(--panel);overflow:hidden}
-.cell img{max-width:100%;max-height:calc(100vh - 210px);display:block;object-fit:contain;
+  min-height:120px;background:#fff;overflow:hidden}
+.cell img{max-width:100%;max-height:calc(100vh - 130px);display:block;object-fit:contain;
   transform-origin:0 0;user-select:none;-webkit-user-drag:none}
 #grid.zoomed .cell .img{cursor:grab;touch-action:none}
 #grid.zoomed .cell .img.panning{cursor:grabbing}
 .cell.focus .img{cursor:zoom-out}
-.cell.focus img{max-height:calc(100vh - 170px)}
-.missing{color:var(--muted);font-size:12px;padding:30px 10px;text-align:center}
-footer{position:fixed;left:0;right:0;bottom:0;z-index:5;background:var(--panel);border-top:1px solid var(--line);
-  padding:8px 12px;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
-#slider{flex:1;min-width:160px;accent-color:var(--accent)}
-#time{font-variant-numeric:tabular-nums;min-width:250px}
-#time b{font-weight:650}
-#load{font-size:12px;color:var(--muted);min-width:110px;text-align:right}
-.ticks{display:flex;justify-content:space-between;font-size:10px;color:var(--muted)}
-#empty{padding:60px 20px;text-align:center;color:var(--muted);max-width:640px;margin:auto}
-#empty code{background:var(--panel2);padding:2px 6px;border-radius:4px;color:var(--text)}
-.kbd{font-size:11px;color:var(--muted)}
-@media (max-width:700px){ #time{min-width:0} .kbd{display:none} }
+.cell.focus img{max-height:calc(100vh - 110px)}
+.missing{color:#666;font:12px var(--mono);padding:30px 10px;text-align:center}
+#empty{padding:60px 20px;color:var(--muted);max-width:640px}
+#empty code{font-family:var(--mono);background:var(--panel2);padding:1px 5px}
+
+@media (max-width:820px){
+  body{display:block;height:auto}
+  #top{flex-wrap:wrap;gap:4px 12px;padding:6px 0 6px 12px}
+  .brand .sub{display:none}
+  #theme{margin-left:auto;align-self:center;padding:6px 12px}
+  .logos img{height:32px}
+  .brand .mark{font-size:22px}
+  .logos a + a{display:none}
+  #time{margin-left:0;order:3;flex-basis:100%;font-size:12px;white-space:normal}
+  #side{border-right:0;display:grid;grid-template-columns:1fr 1fr}
+  #side section{border-right:1px solid var(--line)}
+  #side .help{display:none}
+  #field{height:9em}
+  #bar{flex-wrap:wrap}
+  #hours{flex-basis:100%;order:3}
+  .cell img{max-height:none}
+  #grid{grid-template-columns:minmax(0,1fr) !important}
+}
 </style>
 </head>
 <body>
-<header>
-  <h1>HRRRCast</h1>
-  <div class="ctl"><label for="case">Init</label><select id="case"></select></div>
-  <div class="ctl" id="domainWrap"><label for="domain">Zoom</label><select id="domain"></select></div>
-  <div class="ctl"><label for="field">Product</label><select id="field"></select></div>
-  <div class="ctl" id="levelWrap"><label for="level">Level</label><select id="level"></select></div>
-  <div class="ctl"><label>Members</label><div class="chips" id="members"></div>
-    <button class="chip" id="allMem" title="Show all">all</button></div>
-  <div class="spacer"></div>
-  <div class="ctl"><label>Zoom</label>
-    <button id="zoomOut" title="Zoom out (−)">−</button><button id="zoomIn" title="Zoom in (+)">+</button>
-    <button id="zoomReset" title="Reset zoom (0)" disabled>reset</button></div>
-  <div class="ctl"><label for="cols">Columns</label>
-    <select id="cols"><option value="auto">auto</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select></div>
-  <button id="theme" aria-label="Toggle light / dark mode" title="Switch to light mode">
-    <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-      <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-    <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
-  </button>
+<header id="top">
+  <!-- Logos: logos/tamu.* and logos/atmo.* (svg, png, webp or jpg) next to viewer.html;
+       make_viewer_index.py copies src/logos/ there. Or change src to a full URL.
+       A logo whose file is missing is hidden.
+       White / reversed versions read best on the maroon bar. -->
+  <div class="logos">
+    <a href="https://www.tamu.edu/" title="Texas A&amp;M University"><img src="logos/tamu.svg" alt="Texas A&amp;M University" onerror="logoFallback(this)"></a>
+    <a href="https://artsci.tamu.edu/atmospheric-sciences/" title="Department of Atmospheric Sciences"><img src="logos/atmo.svg" alt="Texas A&amp;M Atmospheric Sciences" onerror="logoFallback(this)"></a>
+  </div>
+  <div class="brand"><span class="mark">HRRRCast-TX</span><span class="sub">experimental ML ensemble &middot; Texas A&amp;M Atmospheric Sciences &middot; based on https://github.com/NOAA-GSL/HRRRCast-live</span></div>
+  <div id="time"></div>
+  <button id="theme" type="button"></button>
 </header>
 
-<div id="grid"></div>
-<div id="empty" hidden></div>
+<aside id="side">
+  <section><h2>Run</h2><select id="case" aria-label="Initialization time"></select></section>
+  <section id="domainWrap"><h2>Zoom Area</h2><select id="domain" aria-label="Domain"></select></section>
+  <section><h2>Product</h2>
+    <select id="field" size="14" aria-label="Product"></select>
+    <div class="row" id="levelWrap"><label for="level">Level</label><select id="level"></select></div>
+  </section>
+  <section><h2>Members <span class="links"><button class="link" id="allMem" type="button" title="Show every member">all</button><button class="link" id="noMem" type="button" title="Clear the selection">none</button></span></h2>
+    <div id="members"></div></section>
+  <section><h2>Display</h2>
+    <div class="row"><label for="cols">Columns</label>
+      <select id="cols"><option value="auto">auto</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select></div>
+    <div class="row"><label>Zoom</label>
+      <button id="zoomOut" title="Zoom out (−)">−</button><button id="zoomIn" title="Zoom in (+)">+</button>
+      <button id="zoomReset" title="Reset zoom (0)" disabled>reset</button></div>
+  </section>
+  <section class="help"><h2>Keys</h2>
+    <dl><dt>← →</dt><dd>forecast hour</dd><dt>space</dt><dd>play / stop</dd><dt>↑ ↓</dt><dd>pressure level</dd>
+      <dt>+ − 0</dt><dd>zoom in / out / reset</dd><dt>click</dt><dd>enlarge one map</dd>
+      <dt>drag</dt><dd>pan when zoomed</dd></dl>
+    <p id="gen"></p></section>
+</aside>
 
-<footer>
-  <button id="prev" title="Previous (←)">◀</button>
-  <button id="play" title="Play / pause (space)">▶ Play</button>
-  <button id="next" title="Next (→)">▶</button>
-  <div class="ctl"><label for="speed">Speed</label>
-    <select id="speed"><option value="1200">slow</option><option value="600" selected>normal</option><option value="300">fast</option><option value="150">very fast</option></select></div>
-  <div style="flex:1;min-width:160px;display:flex;flex-direction:column">
-    <input type="range" id="slider" min="0" max="0" value="0">
-    <div class="ticks" id="ticks"></div>
+<main>
+  <div id="bar">
+    <div class="ctrls">
+      <button id="prev" title="Previous hour (←)">&lsaquo;</button><button id="play" title="Play / stop (space)">Play</button><button id="next" title="Next hour (→)">&rsaquo;</button>
+      <select id="speed" aria-label="Loop speed" title="Loop speed"><option value="1200">slow</option><option value="600" selected>normal</option><option value="300">fast</option><option value="150">faster</option></select>
+    </div>
+    <div id="hours" role="toolbar" aria-label="Forecast hour"></div>
+    <span id="load"></span>
+    <input type="range" id="slider" min="0" max="0" value="0" hidden>
+    <div id="ticks" hidden></div>
   </div>
-  <div id="time"></div>
-  <div id="load"></div>
-  <div class="kbd">← → step · space play · ↑ ↓ level · click map to enlarge · ctrl+scroll / pinch / + − to zoom, drag to pan, 0 resets</div>
-  <div class="kbd" id="gen"></div>
-</footer>
+  <div id="grid"></div>
+  <div id="empty" hidden></div>
+</main>
 
 <script>
-// sun/moon toggle (choice remembered in this browser)
+// light / dark button: shows the mode it switches to
 (function(){
-  const btn = document.getElementById("theme"), root = document.documentElement;
-  const sync = () => { btn.title = root.dataset.theme === "dark" ? "Switch to light mode" : "Switch to dark mode"; };
-  sync();
-  btn.addEventListener("click", () => {
-    root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
-    try { localStorage.setItem("hrrrcast-theme", root.dataset.theme); } catch(e) {}
-    sync();
+  const btn = document.getElementById("theme");
+  HRRRCAST_THEME.onChange(() => {
+    const dark = document.documentElement.dataset.theme === "dark";
+    btn.textContent = dark ? "light" : "dark";
+    btn.title = dark ? "Switch to light colours" : "Switch to dark colours";
   });
+  btn.addEventListener("click", HRRRCAST_THEME.toggle);
 })();
 </script>
 <script>
@@ -132,10 +239,11 @@ const $ = id => document.getElementById(id);
 const pad2 = n => String(n).padStart(2,"0");
 
 // Products shown first, in this order (anything else follows alphabetically)
-const FEATURED = ["summary","REFC","APCP","CAPE","CIN","T2M","D2M","WIND_10M","GUST","MSLMA",
-                  "HLCY_0_3km","HLCY_0_1km","PWAT","VIS","TCDC"];
+const FEATURED = ["REFC","CAPE","PWAT","APCP_TOT","APCP","APCP_6H","APCP_12H",
+                  "CIN","T2M","D2M","WIND_10M","GUST","MSLMA","HLCY_0_3km","HLCY_0_1km","VIS","TCDC","summary"];
 const NAMES = {
-  summary:"Summary panel", REFC:"Composite reflectivity", APCP:"Accumulated precip", CAPE:"CAPE", CIN:"CIN",
+  summary:"Summary panel", REFC:"Composite reflectivity", APCP:"1 hr precip", APCP_TOT:"Total precip",
+  APCP_6H:"6 hr precip", APCP_12H:"12 hr precip", CAPE:"CAPE", CIN:"CIN",
   T2M:"2 m temperature", D2M:"2 m dewpoint", R2M:"2 m RH", POT2M:"2 m potential temp", SPFH2M:"2 m specific humidity",
   WIND_10M:"10 m wind", UGRD10M:"10 m U wind", VGRD10M:"10 m V wind", UGRD80M:"80 m U wind", VGRD80M:"80 m V wind",
   GUST:"Wind gust", GUST_CONV:"Convective gust", GUST_FACTOR:"Gust factor", WIND_MAX:"Max wind",
@@ -151,9 +259,11 @@ const NAMES = {
   SHEAR_SFC_0C:"Shear sfc–0 °C", WARM_LAYER_DEPTH:"Warm layer depth", COLD_LAYER_DEPTH:"Cold layer depth"
 };
 const memLabel = m => m === "hrrr" ? "HRRR (operational)" : m === "avg" ? "Ensemble mean (PMM for REFC, LPMM for precip)" : m === "lpmm" ? "Local PMM (APCP only)" : m === "spr" ? "Spread" : "Member " + parseInt(m.slice(1),10);
+const memShort = m => m === "hrrr" ? "HRRR" : m === "avg" ? "Ens. mean" : m === "lpmm" ? "LPMM" : m === "spr" ? "Spread" : "Mem " + pad2(parseInt(m.slice(1),10));
+const panelTitle = m => m === "hrrr" ? "HRRR (operational)" : m === "avg" ? "Ensemble mean" : memLabel(m);
 
 if (!M || !M.cases || !Object.keys(M.cases).length){
-  document.querySelector("footer").hidden = true;
+  $("bar").hidden = true;
   const e = $("empty"); e.hidden = false;
   e.innerHTML = "No forecast plots indexed yet.<br><br>Run <code>python src/plot.py …</code>, then " +
     "<code>python src/make_viewer_index.py</code> in this folder and reload.";
@@ -162,7 +272,7 @@ if (!M || !M.cases || !Object.keys(M.cases).length){
 
 // ---------- state ----------
 const DEFAULT_MEMBERS = ["hrrr", "m00", "avg"];
-const S = {case:null, domain:"tx", field:null, level:null, members:new Set(), idx:0, cols:"auto", focus:null, playing:false};
+const S = {case:null, domain:"tx", field:null, level:null, members:new Set(), cleared:false, idx:0, cols:"auto", focus:null, playing:false};
 let timer = null, leads = [], cache = {};
 
 function splitProduct(p){
@@ -172,7 +282,7 @@ function splitProduct(p){
 }
 // manifest: cases[case].domains[domain] = {members, memdirs, leads, products, prefix}
 // (older manifests have no "domains": the case object itself is the single domain)
-const DOMAIN_NAMES = {tx:"TX", hcfcd_hrrr:"HCFCD (HRRR)", hcfcd_href:"HCFCD (HREF)", texas:"Texas", hcfcd:"HCFCD (Harris Co.)"};   // hcfcd = folder name before the rename
+const DOMAIN_NAMES = {tx:"Texas (full grid)", hcfcd_hrrr:"HCFCD (HRRR)", hcfcd_href:"HCFCD (HREF)", texas:"Texas", hcfcd:"HCFCD (Harris Co.)"};   // hcfcd = folder name before the rename
 // own-key lookup only: values from the URL (#c=..., #p=...) must never resolve to
 // inherited properties such as "__proto__" or "constructor"
 const own = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
@@ -192,6 +302,7 @@ function imgPath(mem, lead){
 function hasImg(mem, lead){
   const p = caseObj().products[productKey()]; return !!(p && p[mem] && p[mem].includes(lead));
 }
+function initDate(){ const [d,h] = S.case.split("/"); return new Date(Date.UTC(+d.slice(0,4), +d.slice(4,6)-1, +d.slice(6), +h)); }
 
 // ---------- controls ----------
 function fillCases(){
@@ -218,10 +329,11 @@ function fillFields(){
   const sfc = names.filter(n => !feat.includes(n) && !upper.includes(n)).sort();
   const grp = (label, list) => {
     if (!list.length) return; const g = document.createElement("optgroup"); g.label = label;
-    for (const n of list) g.appendChild(new Option(NAMES[n] ? `${NAMES[n]} (${n})` : n, n));
+    for (const n of list){ const o = new Option(NAMES[n] || n, n); o.title = n; g.appendChild(o); }
     sel.appendChild(g);
   };
-  grp("Featured", feat); grp("Surface & derived", sfc); grp("Pressure levels", upper);
+  for (const n of feat){ const o = new Option(NAMES[n] || n, n); o.title = n; sel.appendChild(o); }   // main products, no header
+  grp("Surface & derived", sfc); grp("Upper air", upper);
   if (!own(f, S.field)) S.field = feat[0] || names[0];
   sel.value = S.field;
 }
@@ -235,18 +347,21 @@ function fillLevels(){
 function fillMembers(){
   const c = caseObj(), box = $("members"); box.innerHTML = "";
   const avail = c.members;
-  // default: HRRR, member 0 and the LPMM only (fewer images to load); "All" button shows the rest
-  if (![...S.members].some(m => avail.includes(m))) {
+  // default: HRRR, member 0 and the ensemble mean only (fewer images to load); "all" shows the rest
+  // (an empty selection made with "none" or by unticking everything is kept as is)
+  if (!S.cleared && ![...S.members].some(m => avail.includes(m))) {
     const d = DEFAULT_MEMBERS.filter(m => avail.includes(m));
     S.members = new Set(d.length ? d : avail.slice(0, 1));
   }
   for (const m of avail){
     const b = document.createElement("button");
+    b.type = "button";
     b.className = "chip" + (S.members.has(m) ? " on" : "");
-    b.textContent = m === "hrrr" ? "HRRR" : m === "avg" ? "mean" : m === "lpmm" ? "LPMM" : m === "spr" ? "spread" : parseInt(m.slice(1),10);
+    b.textContent = memShort(m);
     b.title = memLabel(m);
+    b.setAttribute("aria-pressed", S.members.has(m) ? "true" : "false");
     b.onclick = () => { S.members.has(m) ? S.members.delete(m) : S.members.add(m);
-                        if (!S.members.size) S.members.add(m); S.focus = null; refresh(); };
+                        S.cleared = !S.members.size; S.focus = null; refresh(); };
     box.appendChild(b);
   }
 }
@@ -259,9 +374,16 @@ function computeLeads(){
   if (!leads.length) leads = caseObj().leads.slice();
   S.idx = Math.max(0, leads.indexOf(cur));
   const sl = $("slider"); sl.max = Math.max(0, leads.length - 1); sl.value = S.idx;
-  const t = $("ticks"); t.innerHTML = "";
-  const step = Math.ceil(leads.length / 12);
-  leads.forEach((l,i) => { if (i % step === 0 || i === leads.length-1){ const s=document.createElement("span"); s.textContent="f"+pad2(l); t.appendChild(s);} });
+  // forecast-hour strip; a gold left edge marks the first hour of each new (UTC) valid day
+  const box = $("hours"), t0 = initDate().getTime(); box.innerHTML = "";
+  leads.forEach((l, i) => {
+    const b = document.createElement("button"), v = new Date(t0 + l * 3600e3);
+    b.type = "button"; b.textContent = pad2(l);
+    b.title = `f${pad2(l)} · valid ${v.toLocaleDateString("en-US",{weekday:"short", timeZone:"UTC"})} ${pad2(v.getUTCHours())}Z`;
+    if (i > 0 && v.getUTCHours() < (new Date(t0 + leads[i-1] * 3600e3)).getUTCHours()) b.className = "d0";
+    b.onclick = () => { play(false); S.idx = i; draw(); writeHash(); };
+    box.appendChild(b);
+  });
 }
 
 // ---------- zoom (shared by all panels, kept while stepping/looping) ----------
@@ -329,9 +451,12 @@ function buildGrid(){
   let cols = S.cols === "auto" ? Math.min(shown.length, shown.length <= 4 ? shown.length : shown.length <= 6 ? 3 : 4) : +S.cols;
   if (S.focus) cols = 1;
   g.style.gridTemplateColumns = `repeat(${Math.max(1,cols)}, minmax(0,1fr))`;
+  if (!shown.length){ g.innerHTML = '<div class="pick">No members selected &mdash; tick one or more under Members.</div>'; }
   for (const m of shown){
     const cell = document.createElement("div"); cell.className = "cell" + (S.focus ? " focus" : "");
-    cell.innerHTML = `<div class="lbl"><b>${memLabel(m)}</b><span></span></div><div class="img"><img alt=""><div class="missing" hidden>not available</div></div>`;
+    cell.innerHTML = `<div class="lbl"><b></b><span></span></div><div class="img"><img alt=""><div class="missing" hidden>not available</div></div>`;
+    cell.querySelector(".lbl b").textContent = panelTitle(m);
+    cell.querySelector(".lbl b").title = memLabel(m);
     const box = cell.querySelector(".img");
     box.onclick = () => {                            // a drag (pan) is not a click
       if (panMoved){ panMoved = false; return; }
@@ -347,7 +472,7 @@ function draw(){
   for (const m in cells){
     const cell = cells[m], img = cell.querySelector("img"), miss = cell.querySelector(".missing");
     const ok = hasImg(m, lead);
-    cell.querySelector(".lbl span").textContent = "f" + pad2(lead);
+    cell.querySelector(".lbl span").textContent = "F" + pad2(lead);
     if (ok){
       const src = imgPath(m, lead);
       if (img.getAttribute("src") !== src){
@@ -360,12 +485,19 @@ function draw(){
     else { img.hidden = true; miss.hidden = false; }
   }
   $("slider").value = S.idx;
-  const [d,h] = S.case.split("/");
-  const init = new Date(Date.UTC(+d.slice(0,4), +d.slice(4,6)-1, +d.slice(6), +h));
+  const hb = $("hours").children;
+  for (let i = 0; i < hb.length; i++) hb[i].classList.toggle("on", i === S.idx);
+  const cur = hb[S.idx];
+  if (cur){                                          // keep the current hour in view (strip only)
+    const strip = $("hours"), l = cur.offsetLeft - strip.offsetLeft, r = l + cur.offsetWidth;
+    if (l < strip.scrollLeft) strip.scrollLeft = l - 20;
+    else if (r > strip.scrollLeft + strip.clientWidth) strip.scrollLeft = r - strip.clientWidth + 20;
+  }
+  const init = initDate();
   const valid = new Date(init.getTime() + lead*3600e3);
   const fmt = t => `${t.getUTCFullYear()}-${pad2(t.getUTCMonth()+1)}-${pad2(t.getUTCDate())} ${pad2(t.getUTCHours())}Z`;
   const wd = valid.toLocaleDateString("en-US",{weekday:"short", timeZone:"UTC"});
-  $("time").innerHTML = `<b>f${pad2(lead)}</b> · valid <b>${wd} ${fmt(valid)}</b> · init ${fmt(init)}`;
+  $("time").innerHTML = `INIT ${fmt(init)} &nbsp;&nbsp; <b>F${pad2(lead)}</b> &nbsp; VALID <b>${wd} ${fmt(valid)}</b>`;
 }
 function preload(){
   const want = [];
@@ -383,14 +515,18 @@ function preload(){
 }
 
 // ---------- playback ----------
-// forward wraps to the first hour (so play loops); backward stops at the first forecast hour
-function step(d){ if (!leads.length) return; S.idx = d < 0 ? Math.max(0, S.idx + d) : (S.idx + d) % leads.length; draw(); writeHash(); }
+// arrow keys / buttons stop at the first and last forecast hour; only Play loops around
+function step(d, wrap){
+  if (!leads.length) return;
+  S.idx = wrap ? (S.idx + d + leads.length) % leads.length : Math.min(leads.length - 1, Math.max(0, S.idx + d));
+  draw(); writeHash();
+}
 function play(on){
-  S.playing = on; $("play").textContent = on ? "❚❚ Pause" : "▶ Play"; $("play").classList.toggle("on", on);
+  S.playing = on; $("play").textContent = on ? "Stop" : "Play"; $("play").classList.toggle("on", on);
   clearTimeout(timer);
   if (!on) return;
   const loop = () => {
-    step(1);
+    step(1, true);
     const ms = +$("speed").value * (S.idx === leads.length - 1 ? 2.5 : 1);   // dwell on last frame
     timer = setTimeout(loop, ms);
   };
@@ -428,14 +564,16 @@ $("zoomReset").onclick = resetZoom;
 $("field").onchange = e => { S.field = e.target.value; refresh(); };
 $("level").onchange = e => { S.level = e.target.value; refresh(); };
 $("cols").onchange = e => { S.cols = e.target.value; buildGrid(); draw(); writeHash(); };
-$("allMem").onclick = () => { S.members = new Set(caseObj().members); S.focus = null; refresh(); };
+$("allMem").onclick = () => { S.members = new Set(caseObj().members); S.cleared = false; S.focus = null; refresh(); };
+$("noMem").onclick = () => { play(false); S.members = new Set(); S.cleared = true; S.focus = null; refresh(); };
 $("slider").oninput = e => { S.idx = +e.target.value; draw(); writeHash(); };
 $("prev").onclick = () => { play(false); step(-1); };
 $("next").onclick = () => { play(false); step(1); };
 $("play").onclick = () => play(!S.playing);
 $("speed").onchange = () => { if (S.playing) play(true); };
 document.addEventListener("keydown", e => {
-  if (e.target.tagName === "SELECT") return;
+  // in a drop-down or the product list, keep its own keys except left/right (forecast hour)
+  if (e.target.tagName === "SELECT" && e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
   if (e.key === "ArrowRight"){ play(false); step(1); e.preventDefault(); }
   else if (e.key === "ArrowLeft"){ play(false); step(-1); e.preventDefault(); }
   else if (e.key === " "){ play(!S.playing); e.preventDefault(); }
@@ -453,7 +591,7 @@ document.addEventListener("keydown", e => {
   }
 });
 
-$("gen").textContent = "index: " + (M.generated || "?");
+$("gen").textContent = "index built " + (M.generated || "?");
 fillCases();
 const startLead = readHash();
 S.case = S.case || $("case").options[0].value;

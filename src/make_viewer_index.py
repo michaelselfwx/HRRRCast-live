@@ -185,6 +185,18 @@ def main():
     )
     template = Path(__file__).with_name("viewer_template.html")
     shutil.copyfile(template, out / "viewer.html")
+    # title-bar logos (logos/tamu.*, atmo.* next to this script) go next to viewer.html;
+    # nothing to copy when the script already runs from the output folder
+    logos = Path(__file__).resolve().with_name("logos")
+    dest = out / "logos"
+    if logos.is_dir() and logos != dest.resolve():
+        dest.mkdir(exist_ok=True)
+        for f in logos.iterdir():
+            if f.suffix.lower() in (".png", ".svg", ".jpg", ".jpeg", ".webp", ".gif"):
+                try:
+                    shutil.copyfile(f, dest / f.name)
+                except shutil.SameFileError:
+                    pass
 
     n_img = sum(len(ls) for c in cases.values() for dm in c["domains"].values()
                 for p in dm["products"].values() for ls in p.values())
