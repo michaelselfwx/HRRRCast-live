@@ -38,7 +38,6 @@ PACKAGEROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DATAROOT=${DATAROOT:-$SCRATCH/hrrrcast-data}
 RUNHRRR=${RUNHRRR:-YES}
 PLOT_DOMAINS=${HRRRCAST_PLOT_DOMAINS:-tx hcfcd_hrrr}
-PLOT_PRODUCTS=${PLOT_PRODUCTS:-} # empty to run all the plots
 PLOT_LPMM=${PLOT_LPMM:-NO}
 REDO_PMM=${REDO_PMM:-NO}
 FROM_GRIB=${FROM_GRIB:-YES}
@@ -52,8 +51,8 @@ if [ $# -eq 0 ]; then
     sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
 fi
-# quote each product for the job script; no wildcard expansion here (APCP* is for plot.py)
-set -f; PRODUCT_ARGS=""; for p in $PLOT_PRODUCTS; do PRODUCT_ARGS+="\"$p\" "; done; set +f
+# # quote each product for the job script; no wildcard expansion here (APCP* is for plot.py)
+# set -f; PRODUCT_ARGS=""; for p in $PLOT_PRODUCTS; do PRODUCT_ARGS+="\"$p\" "; done; set +f
 SB_ACCOUNT=""
 [ -n "${ACCNR:-}" ] && SB_ACCOUNT="--account=${ACCNR}"
 mkdir -p "$DATAROOT/logs"
@@ -153,8 +152,7 @@ if [ "${REMOVE_AVG_PLOTS}" == "YES" ]; then
     echo "Removed old avg_ plot folders"
 fi
 
-python ${PACKAGEROOT}/src/plot.py ${INIT} ${LEAD} --members ${PLOT_MEMBERS} --domains ${PLOT_DOMAINS} \\
-    --products ${PRODUCT_ARGS}--forecast_dir ${DATAROOT} --output_dir ${DATAROOT}
+python ${PACKAGEROOT}/src/plot.py ${INIT} ${LEAD} --members ${PLOT_MEMBERS} --domains ${PLOT_DOMAINS} --forecast_dir ${DATAROOT} --output_dir ${DATAROOT}
 
 if [ "${REBUILD}" == "YES" ] && [ "${KEEP_NC}" != "YES" ]; then
     # back to the cleaned-up state: only the hrrrcast.*.pgrb2* files (and plots) stay
