@@ -31,14 +31,14 @@ N_GPUS=${4:-1}
 PACKAGEROOT=${5:-`pwd`}
 DATAROOT=${6:-$SCRATCH/hrrrcast-data}
 RUNPLOT=${7:-"YES"}
-RUNCLEANUP=${9:-"NO"}
+RUNHRRR=${8:-"YES"}
+RUNCLEANUP=${9:-"YES"}
 
 GRACE_GPU=${GRACE_GPU:-a100}
 case "$GRACE_GPU" in a100|a40) ;; *) echo "GRACE_GPU must be a100 or a40" >&2; exit 1;; esac
 FCST_EXTRA=${FCST_EXTRA:---bbox 25.8,36.5,-106.7,-93.5} # texas domain
 GET_BCS_EXTRA=${GET_BCS_EXTRA:-}
-RUNHRRR=${RUNHRRR:-YES}
-PLOT_LPMM=${PLOT_LPMM:-NO}
+PLOT_LPMM=${PLOT_LPMM:-NO} # dont plot a duplicate lpmm, since it is input into the avg button anyways
 
 SBATCH_ACCOUNT_OPT=""
 if [ -n "${ACCNR:-}" ]; then SBATCH_ACCOUNT_OPT="--account=${ACCNR}"; fi

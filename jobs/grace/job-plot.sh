@@ -50,5 +50,5 @@ echo "In plot, init_time=${INIT_TIME}, lead_hour=${LEAD_HOUR}, TASK_ID=${TASK_ID
 # plot domains: tx = full forecast grid, hcfcd_hrrr = Harris County box on HRRR corners (YYYYMMDD/HH/hcfcd_hrrr/);
 # hcfcd_href (HREF corners) can be added with HRRRCAST_PLOT_DOMAINS="tx hcfcd_hrrr hcfcd_href"
 PLOT_DOMAINS=${HRRRCAST_PLOT_DOMAINS:-tx hcfcd_hrrr}
-python3 ${PACKAGEROOT}/src/plot.py ${INIT_TIME} ${LEAD_HOUR} --members ${MEMBER_RANGE} --domains ${PLOT_DOMAINS} --products REFC "APCP*" PWAT CAPE --forecast_dir ${DATAROOT} --output_dir ${DATAROOT}
+python3 ${PACKAGEROOT}/src/plot.py ${INIT_TIME} ${LEAD_HOUR} --members ${MEMBER_RANGE} --domains ${PLOT_DOMAINS} --forecast_dir ${DATAROOT} --output_dir ${DATAROOT}
 
