@@ -202,7 +202,10 @@ def _encode_eccodes(section3, ref_time: datetime, lead_hour: int, var_name: str,
     span = float(finite.max() - finite.min()) * 10.0 ** dec if finite.size else 0.0
     nbits = int(np.ceil(np.log2(span + 1.0))) + 1 if span > 0 else 0
     _put(m, "decimalScaleFactor", dec)
-    _put(m, "bitsPerValue", min(nbits, 32))
+    # ecCodes complex packing allows at most 25 bits and aborts the whole process (assertion,
+    # not an exception) beyond that, e.g. upper-level SPFH with decimal scale 10 needs ~27.
+    # 24 bits still resolves 1/16.7 million of the field's range.
+    _put(m, "bitsPerValue", min(nbits, 24))
     if finite.size < arr.size:            # NaN -> missing via bitmap
         m["values"] = np.ma.masked_invalid(arr).ravel()
     else:

@@ -611,6 +611,11 @@ def preprocess_grib_data(norm_file: str, datetime_str: str,
         
         # Set n_workers to number of lead hours (1 to max_lead_time inclusive)
         n_workers = max_lead_time if max_lead_time > 0 else 1
+        # cap with $HRRRCAST_BCS_WORKERS (each worker holds full-grid GFS->HRRR fields; a desktop
+        # runs out of memory with one per lead hour, and the OS kills workers abruptly)
+        cap = int(os.environ.get("HRRRCAST_BCS_WORKERS", "0") or 0)
+        if cap > 0:
+            n_workers = min(n_workers, cap)
         logger.info(f"Using {n_workers} worker processes for parallel processing (one per lead hour, skipping 0th hour)")
         
         # Setup paths
