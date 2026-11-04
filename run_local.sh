@@ -83,6 +83,19 @@ if [ "${CONDA_DEFAULT_ENV:-}" != "$HRRRCAST_CONDA_ENV" ]; then
     conda activate "$HRRRCAST_CONDA_ENV" || { echo "ERROR: cannot activate conda env $HRRRCAST_CONDA_ENV" >&2; exit 1; }
 fi
 export LD_LIBRARY_PATH="${CONDA_PREFIX:-}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# XLA (TensorFlow's GPU compiler) needs CUDA's libdevice.10.bc. TF 2.15's pip build looks for it at
+# a broken path (".../libtensorflow_framework.so.2/../../nvidia/cuda_nvcc/..."), aborts with
+# "Could not open input file ... libdevice.10.bc", and kills the forecast whenever XLA compiles a
+# kernel (it can even with HRRRCAST_XLA=0). Point XLA at the pip CUDA compiler package directly.
+NVCC_DIR=$(ls -d "$CONDA_PREFIX"/lib/python3*/site-packages/nvidia/cuda_nvcc 2>/dev/null | head -1)
+if [ -n "$NVCC_DIR" ] && [ -f "$NVCC_DIR/nvvm/libdevice/libdevice.10.bc" ]; then
+    case " ${XLA_FLAGS:-} " in
+        *xla_gpu_cuda_data_dir*) ;;
+        *) export XLA_FLAGS="${XLA_FLAGS:+$XLA_FLAGS }--xla_gpu_cuda_data_dir=$NVCC_DIR" ;;
+    esac
+else
+    echo "WARNING: no libdevice.10.bc under $CONDA_PREFIX (pip install nvidia-cuda-nvcc-cu12 in $HRRRCAST_CONDA_ENV); XLA compiles will abort" >&2
+fi
 export TF_CPP_MIN_LOG_LEVEL=1
 export TF_GPU_ALLOCATOR=cuda_malloc_async
 export HRRRCAST_XLA=${HRRRCAST_XLA:-0}
