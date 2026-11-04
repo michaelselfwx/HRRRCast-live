@@ -20,7 +20,7 @@ import logging
 import os
 import sys
 from datetime import timedelta
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import matplotlib.pyplot as plt
@@ -816,7 +816,8 @@ def plot_forecast_data(datetime_str: str,
                       forecast_dir: str = "./", output_dir: str = "./",
                       products: Optional[List[str]] = None,
                       counties: Optional[bool] = None,
-                      domains: Optional[List[str]] = None):
+                      domains: Optional[List[str]] = None,
+                      shard: Tuple[int, int] = (0, 1)):
     """Main plotting function. Plots hours 1..lead_hour of one member, or of a list of members,
     in one process pool (every member x hour is a task), so all allocated cores stay busy.
     Workers: $HRRRCAST_PLOT_WORKERS, else $SLURM_CPUS_PER_TASK, else the CPU count."""
@@ -856,8 +857,18 @@ def plot_forecast_data(datetime_str: str,
                     continue
                 args_list.append((h, ds_path, init_datetime, init_year, init_month, init_day, init_hh,
                                   output_dir, date_str, mem_str, config_dict))
-        cores = int(os.environ.get("HRRRCAST_PLOT_WORKERS")
-                    or os.environ.get("SLURM_CPUS_PER_TASK") or os.cpu_count() or 1)
+        # job-array split: task k of n takes every n-th member-hour (k, k+n, ...), so each
+        # task gets a similar mix of members and hours
+        k, n = shard
+        if n > 1:
+            total = len(args_list)
+            args_list = args_list[k::n]
+            logger.info(f"Shard {k}/{n}: {len(args_list)} of {total} member-hours")
+        try:   # cores this job may use (Slurm limits the process to its allocation)
+            avail = len(os.sched_getaffinity(0))
+        except AttributeError:
+            avail = os.cpu_count() or 1
+        cores = int(os.environ.get("HRRRCAST_PLOT_WORKERS") or os.environ.get("SLURM_CPUS_PER_TASK") or avail)
         n_workers = max(1, min(cores, len(args_list)))
         logger.info(f"Plotting {len(args_list)} member-hours ({' '.join(mem_strs)}) with {n_workers} workers")
         if not args_list:
@@ -915,6 +926,9 @@ def parse_arguments():
     parser.add_argument("--products", nargs="+", default=None,
                         help="Only plot these products (names or wildcards), e.g. REFC APCP T2M HGT_500hPa summary. "
                              "Default: $HRRRCAST_PLOT_PRODUCTS if set, else everything")
+    parser.add_argument("--shard", default="0/1",
+                        help="K/N: plot only every N-th member-hour starting at K (Slurm job arrays; "
+                             "default 0/1 = everything)")
     parser.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                        help="Logging level")
     
@@ -967,6 +981,12 @@ def main():
             sys.exit(1)
         logger.info(f"Domains: {' '.join(domains)}")
 
+        try:
+            k, n = (int(v) for v in args.shard.split("/"))
+            assert n >= 1 and 0 <= k < n
+        except Exception:
+            logger.error(f"--shard must be K/N with 0 <= K < N (got {args.shard!r})")
+            sys.exit(1)
         if True:   # all members in one pool
             plot_forecast_data(
                 datetime_str=args.inittime,
@@ -978,6 +998,7 @@ def main():
                 products=products,
                 counties=args.counties,
                 domains=domains,
+                shard=(k, n),
             )
     except Exception as e:
         logger.error(f"Application failed: {e}")

@@ -19,6 +19,10 @@
 #                Plotted by default: hrrr, m00..m(N-1), avg (ensemble mean; PMM for REFC,
 #                local PMM for precip; needs 2+ members). The spread (spr) is still computed
 #                (NetCDF/GRIB2) but no longer plotted.
+#   PLOT_NODES   nodes (job-array tasks) for the member plots (default 4); HRRR_PLOT_NODES and
+#                ENS_PLOT_NODES (default 1 each) for the hrrr / avg plots. Every task takes a whole
+#                48-core node and plots an interleaved share of the member-hours (plot.py --shard).
+#                Plot jobs run on CPU nodes, so they never hold up the GPU forecast.
 #   FCST_WALLTIME / PMM_WALLTIME / ...  override any walltime below
 #   HRRRCAST_CONDA_SH / HRRRCAST_CONDA_ENV  where conda lives / env name (etc/env_grace.sh)
 
@@ -39,6 +43,10 @@ case "$GRACE_GPU" in a100|a40) ;; *) echo "GRACE_GPU must be a100 or a40" >&2; e
 FCST_EXTRA=${FCST_EXTRA:---bbox 25.8,36.5,-106.7,-93.5} # texas domain
 GET_BCS_EXTRA=${GET_BCS_EXTRA:-}
 PLOT_LPMM=${PLOT_LPMM:-NO} # dont plot a duplicate lpmm, since it is input into the avg button anyways
+PLOT_NODES=${PLOT_NODES:-4}
+HRRR_PLOT_NODES=${HRRR_PLOT_NODES:-1}
+ENS_PLOT_NODES=${ENS_PLOT_NODES:-1}
+PLOT_CPUS=${PLOT_CPUS:-48}
 
 SBATCH_ACCOUNT_OPT=""
 if [ -n "${ACCNR:-}" ]; then SBATCH_ACCOUNT_OPT="--account=${ACCNR}"; fi
@@ -130,13 +138,15 @@ jobidD=$(sb --dependency=$DERIVED_DEP logs/job-derived-precip.sh) || exit 1; ech
 last_jobid=$jobidD
 
 if [ "$RUNPLOT" == "YES" ]; then
-    atparse < $JOBDIR/job-plot.sh > logs/job-plot.sh
-    jobid6=$(sb --dependency=$FCST_DONE,afterok:$jobidD --array=$ARRAY_SPEC logs/job-plot.sh) || exit 1
-    echo "Submitted plot array: $jobid6"
+    # members: PLOT_NODES array tasks, each an interleaved share of all member-hours
+    atparse PLOT_MEMBERS="0-$((N_ENSEMBLES-1))" PLOT_SHARDS=$PLOT_NODES < $JOBDIR/job-plot.sh > logs/job-plot.sh
+    jobid6=$(sb --dependency=$FCST_DONE,afterok:$jobidD --array=0-$((PLOT_NODES-1)) logs/job-plot.sh) || exit 1
+    echo "Submitted member plot array ($PLOT_NODES nodes): $jobid6"
     last_jobid=$jobid6
     if [ "$RUNHRRR" == "YES" ]; then
-        atparse PLOT_MEMBERS=hrrr < $JOBDIR/job-plot.sh > logs/job-plot-hrrr.sh
-        jobidHP=$(sb --dependency=afterok:$jobidH:$jobidD logs/job-plot-hrrr.sh) || exit 1; echo "Submitted HRRR plot: $jobidHP"
+        atparse PLOT_MEMBERS=hrrr PLOT_SHARDS=$HRRR_PLOT_NODES < $JOBDIR/job-plot.sh > logs/job-plot-hrrr.sh
+        jobidHP=$(sb --dependency=afterok:$jobidH:$jobidD --array=0-$((HRRR_PLOT_NODES-1)) logs/job-plot-hrrr.sh) || exit 1
+        echo "Submitted HRRR plot ($HRRR_PLOT_NODES nodes): $jobidHP"
     fi
 fi
 
@@ -150,13 +160,17 @@ if [ $N_ENSEMBLES -ge 2 ]; then
     [ "$PLOT_LPMM" == "YES" ] && ENS_PLOT_MEMBERS="avg lpmm"
     ENS_PLOT_DEP="afterok:$jobid7:$jobidD"
     if [ "$RUNPLOT" == "YES" ]; then
-        atparse PLOT_MEMBERS="$ENS_PLOT_MEMBERS" < $JOBDIR/job-plot.sh > logs/job-plot-ens.sh
-        jobid8=$(sb --dependency=$ENS_PLOT_DEP logs/job-plot-ens.sh) || exit 1; echo "Submitted ensemble plot ($ENS_PLOT_MEMBERS): $jobid8"
+        atparse PLOT_MEMBERS="$ENS_PLOT_MEMBERS" PLOT_SHARDS=$ENS_PLOT_NODES < $JOBDIR/job-plot.sh > logs/job-plot-ens.sh
+        jobid8=$(sb --dependency=$ENS_PLOT_DEP --array=0-$((ENS_PLOT_NODES-1)) logs/job-plot-ens.sh) || exit 1
+        echo "Submitted ensemble plot ($ENS_PLOT_MEMBERS, $ENS_PLOT_NODES nodes): $jobid8"
         last_jobid=$jobid8
     fi
 fi
 
 if [ "$RUNCLEANUP" == "YES" ]; then
     atparse < $JOBDIR/job-cleanup.sh > logs/job-cleanup.sh
-    jobidc=$(sb --dependency=afterany:$last_jobid logs/job-cleanup.sh) || exit 1; echo "Submitted cleanup: $jobidc"
+    # wait for EVERY job that reads the NetCDF (member/HRRR/ensemble plots run side by side)
+    CLEAN_DEP="afterany:$last_jobid"
+    for j in ${jobidD:-} ${jobid6:-} ${jobidHP:-} ${jobid7:-} ${jobid8:-}; do CLEAN_DEP+=":$j"; done
+    jobidc=$(sb --dependency=$CLEAN_DEP logs/job-cleanup.sh) || exit 1; echo "Submitted cleanup: $jobidc"
 fi

@@ -5,7 +5,9 @@
 #   ./replot_grace.sh INIT [INIT ...]          INIT = YYYY-MM-DDTHH (the HRRRCast init time)
 #   ./replot_grace.sh 2025-06-12T12 2026-10-03T16 2026-10-06T16
 #
-# One CPU job per case, which runs in order:
+# Three Slurm jobs per case: a prep job (steps 0-3), a plot job array of REPLOT_NODES whole
+# nodes (step 4; each task plots an interleaved share of the member-hours), and a small finish
+# job that removes rebuilt NetCDF once every plot task has ended. Steps:
 #   0. grib2nc.py         only if the NetCDF was cleaned up: rebuild hrrrcast_{mNN,avg,spr}_fHH.nc
 #                         from the kept hrrrcast.*.pgrb2.fHH files (deleted again at the end)
 #   1. get_hrrr_fcst.py   operational HRRR of the same cycle (skips hours already downloaded)
@@ -23,15 +25,15 @@
 #   ACCNR              HPRC account number
 #   RUNHRRR            YES (default) / NO   fetch + plot the operational HRRR
 #   HRRRCAST_PLOT_DOMAINS   default "tx hcfcd_hrrr"
-#   PLOT_PRODUCTS      default: REFC APCP* CAPE T2M WIND_10M MSLMA HLCY_0_3km HGT_500hPa
 #   PLOT_LPMM          NO (default) / YES   also plot the stand-alone LPMM precip panels ("lpmm")
 #   REDO_PMM           NO (default) / YES   rerun compute_pmm even if the spread files exist
 #   REMOVE_AVG_PLOTS   NO (default) / YES   delete old avg_ plot folders before replotting
 #   FROM_GRIB          YES (default) / NO   rebuild cleaned-up NetCDF from the GRIB2 output (step 0)
 #   KEEP_NC            NO (default) / YES   keep the rebuilt / derived NetCDF files afterwards
 #   ONLY_PLOT          plot just these runs, e.g. "avg" or "avg spr" (default: hrrr, all members, avg)
-#   REPLOT_CPUS        cores for the job (default 48); plotting and grib2nc use all of them
-#   REPLOT_WALLTIME    default 02:00:00
+#   REPLOT_NODES       nodes in the plot job array (default 4)
+#   REPLOT_CPUS        cores per job / array task (default 48 = a whole Grace node)
+#   REPLOT_WALLTIME    prep job walltime (default 02:00:00); PLOT_WALLTIME for each plot task (02:00:00)
 #   DRYRUN=1           write the job scripts but don't submit them
 
 PACKAGEROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -45,6 +47,8 @@ KEEP_NC=${KEEP_NC:-NO}
 REMOVE_AVG_PLOTS=${REMOVE_AVG_PLOTS:-NO}
 REPLOT_WALLTIME=${REPLOT_WALLTIME:-02:00:00}
 REPLOT_CPUS=${REPLOT_CPUS:-48}
+REPLOT_NODES=${REPLOT_NODES:-4}
+PLOT_WALLTIME=${PLOT_WALLTIME:-02:00:00}
 ONLY_PLOT=${ONLY_PLOT:-}
 
 if [ $# -eq 0 ]; then
@@ -109,6 +113,8 @@ for INIT in "$@"; do
     PLOT_MEMBERS=$(echo $PLOT_MEMBERS)   # tidy spaces
 
     JOB="$DATAROOT/logs/job-replot-${YMD}${HH}.sh"
+    JOBP="$DATAROOT/logs/job-replot-plot-${YMD}${HH}.sh"
+    JOBF="$DATAROOT/logs/job-replot-finish-${YMD}${HH}.sh"
     cat > "$JOB" <<JOBEOF
 #!/bin/bash
 #SBATCH --job-name=replot_${YMD}${HH}
@@ -152,7 +158,36 @@ if [ "${REMOVE_AVG_PLOTS}" == "YES" ]; then
     echo "Removed old avg_ plot folders"
 fi
 
-python ${PACKAGEROOT}/src/plot.py ${INIT} ${LEAD} --members ${PLOT_MEMBERS} --domains ${PLOT_DOMAINS} --forecast_dir ${DATAROOT} --output_dir ${DATAROOT}
+JOBEOF
+
+    # plot array: task k of REPLOT_NODES plots every REPLOT_NODES-th member-hour from k
+    cat > "$JOBP" <<JOBEOF
+#!/bin/bash
+#SBATCH --job-name=replot_plot_${YMD}${HH}
+#SBATCH --output=${DATAROOT}/logs/replot_plot_${YMD}${HH}_%A_%a.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=${REPLOT_CPUS}
+#SBATCH --mem=360G
+#SBATCH --time=${PLOT_WALLTIME}
+
+source ${PACKAGEROOT}/etc/env_grace.sh
+module load WebProxy 2>/dev/null || echo "WebProxy module not loaded; cartopy map downloads may fail"
+cd ${DATAROOT}
+echo "Replot ${INIT} plots: ${PLOT_MEMBERS}; shard \${SLURM_ARRAY_TASK_ID:-0}/${REPLOT_NODES}"
+python ${PACKAGEROOT}/src/plot.py ${INIT} ${LEAD} --members ${PLOT_MEMBERS} --shard \${SLURM_ARRAY_TASK_ID:-0}/${REPLOT_NODES} \\
+    --domains ${PLOT_DOMAINS} --forecast_dir ${DATAROOT} --output_dir ${DATAROOT}
+JOBEOF
+
+    cat > "$JOBF" <<JOBEOF
+#!/bin/bash
+#SBATCH --job-name=replot_finish_${YMD}${HH}
+#SBATCH --output=${DATAROOT}/logs/replot_finish_${YMD}${HH}_%j.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=2G
+#SBATCH --time=00:10:00
 
 if [ "${REBUILD}" == "YES" ] && [ "${KEEP_NC}" != "YES" ]; then
     # back to the cleaned-up state: only the hrrrcast.*.pgrb2* files (and plots) stay
@@ -163,9 +198,15 @@ fi
 JOBEOF
 
     if [ -n "${DRYRUN:-}" ]; then
-        echo "$INIT: wrote $JOB (not submitted): $N members, f01-f$LEAD, plots: $PLOT_MEMBERS"
+        echo "$INIT: wrote $JOB, $JOBP, $JOBF (not submitted): $N members, f01-f$LEAD, plots: $PLOT_MEMBERS on $REPLOT_NODES nodes"
     else
         JID=$(sbatch --parsable $SB_ACCOUNT "$JOB") || { echo "sbatch failed for $INIT" >&2; continue; }
-        echo "$INIT: submitted job $JID ($N members, f01-f$LEAD, plots: $PLOT_MEMBERS) -> $DATAROOT/logs/replot_${YMD}${HH}_${JID}.out"
+        # plots start when prep ends (afterany: prep only warns on partial failures)
+        PID=$(sbatch --parsable $SB_ACCOUNT --dependency=afterany:$JID --array=0-$((REPLOT_NODES-1)) "$JOBP") \
+            || { echo "sbatch (plot array) failed for $INIT" >&2; continue; }
+        FID=$(sbatch --parsable $SB_ACCOUNT --dependency=afterany:$PID "$JOBF") \
+            || echo "sbatch (finish) failed for $INIT" >&2
+        echo "$INIT: prep $JID -> plot array $PID ($REPLOT_NODES nodes) -> finish $FID; $N members, f01-f$LEAD, plots: $PLOT_MEMBERS"
+        echo "    logs: $DATAROOT/logs/replot_${YMD}${HH}_${JID}.out, replot_plot_${YMD}${HH}_${PID}_*.out"
     fi
 done

@@ -1,54 +1,32 @@
 #!/bin/bash
 #SBATCH --job-name=plot
-#SBATCH --output=logs/plot_%j.out
+#SBATCH --output=logs/plot_%A_%a.out
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=@[CPU_TASKS]
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=@[PLOT_CPUS]
 #SBATCH --time=@[PLOT_WALLTIME]
 #SBATCH --mem=360G
 
-# set vars
+# Plots PLOT_MEMBERS (e.g. "0-17", "hrrr", "avg") for every lead hour. Submitted as a job array
+# of PLOT_SHARDS tasks: task k plots every PLOT_SHARDS-th member-hour starting at k (plot.py
+# --shard k/N), so N nodes share the work. Each task uses all PLOT_CPUS cores of its node.
+
 INIT_TIME="@[INIT_TIME]"
 LEAD_HOUR=@[LEAD_HOUR]
 PACKAGEROOT=@[PACKAGEROOT]
 DATAROOT=@[DATAROOT]
-N_ENSEMBLES=@[N_ENSEMBLES]
-N_GPUS=@[N_GPUS]
-PLOT_MEMBERS="@[PLOT_MEMBERS]"   # non-array runs: which special members to plot
+PLOT_MEMBERS="@[PLOT_MEMBERS]"
+PLOT_SHARDS=@[PLOT_SHARDS]
 
-# conda
 source ${PACKAGEROOT}/etc/env_grace.sh
 # cartopy downloads coastline/border shapefiles on first use -> needs internet
 module load WebProxy 2>/dev/null || echo "WebProxy module not loaded; cartopy map downloads may fail"
 
-if [ -v SLURM_ARRAY_TASK_ID ]; then
-    # job array task -> compute member range for this task
-    TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
-
-    # Compute start-end range for this task using block distribution
-    chunk=$(( N_ENSEMBLES / N_GPUS ))
-    rem=$(( N_ENSEMBLES % N_GPUS ))
-    extra=0
-    if (( TASK_ID < rem )); then extra=1; fi
-    if (( TASK_ID < rem )); then
-        start=$(( TASK_ID * chunk + TASK_ID ))
-    else
-        start=$(( TASK_ID * chunk + rem ))
-    fi
-    end=$(( start + chunk + extra - 1 ))
-
-    if (( start > end )); then
-        echo "No members assigned to plot array task ${TASK_ID} (N_ENSEMBLES=${N_ENSEMBLES}, N_GPUS=${N_GPUS}). Exiting."
-        exit 0
-    fi
-    MEMBER_RANGE="${start}-${end}"
-else
-    MEMBER_RANGE="${PLOT_MEMBERS:-avg}"
-fi
-
-echo "In plot, init_time=${INIT_TIME}, lead_hour=${LEAD_HOUR}, TASK_ID=${TASK_ID}, MEMBER_RANGE=${MEMBER_RANGE}"
+TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
+echo "In plot, init_time=${INIT_TIME}, lead_hour=${LEAD_HOUR}, members=${PLOT_MEMBERS}, shard=${TASK_ID}/${PLOT_SHARDS}, cpus=${SLURM_CPUS_PER_TASK:-?}"
 
 # plot domains: tx = full forecast grid, hcfcd_hrrr = Harris County box on HRRR corners (YYYYMMDD/HH/hcfcd_hrrr/);
 # hcfcd_href (HREF corners) can be added with HRRRCAST_PLOT_DOMAINS="tx hcfcd_hrrr hcfcd_href"
 PLOT_DOMAINS=${HRRRCAST_PLOT_DOMAINS:-tx hcfcd_hrrr}
-python3 ${PACKAGEROOT}/src/plot.py ${INIT_TIME} ${LEAD_HOUR} --members ${MEMBER_RANGE} --domains ${PLOT_DOMAINS} --forecast_dir ${DATAROOT} --output_dir ${DATAROOT}
-
+python3 ${PACKAGEROOT}/src/plot.py ${INIT_TIME} ${LEAD_HOUR} --members ${PLOT_MEMBERS} --shard ${TASK_ID}/${PLOT_SHARDS} \
+    --domains ${PLOT_DOMAINS} --forecast_dir ${DATAROOT} --output_dir ${DATAROOT}
