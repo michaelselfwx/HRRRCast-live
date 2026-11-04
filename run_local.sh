@@ -33,6 +33,11 @@
 #   RUNPLOT         YES (default) / NO
 #   PLOT_LPMM       NO (default) / YES   also the stand-alone LPMM precip panels
 #   BCS_WORKERS     make_bcs.py processes (default 4; each holds full-grid fields -> RAM-bound)
+#   PLOT_PRODUCTS   which maps to draw (space-separated; "" = every product). Default:
+#                "REFC APCP* PWAT CAPE CIN HGT TMP UGRD VGRD". A name matches a whole variable
+#                (TMP = all 20 levels, APCP = 1-h + run-total/6-h/12-h), or one level (TMP_850hPa),
+#                and may use wildcards ("*_500hPa" = every variable at 500 hPa). Others: summary,
+#                T2M, D2M, WIND_10M, GUST, MSLMA, HLCY_0_3km, VIS, TCDC ... (cf_attributes.py).
 #   PLOT_WORKERS    plot processes (default: half the CPU threads; each needs ~1-2 GB RAM)
 #   LPMM_PATCH / LPMM_HALO   LPMM tile / halo in grid points (default 16 / 24)
 #   START_AT        skip earlier steps of a case already partly run: fcst (inputs already
@@ -61,10 +66,11 @@ CLEANUP=${CLEANUP:-NO}
 START_AT=${START_AT:-}
 case "$START_AT" in ""|fcst|post|plot) ;; *) echo "START_AT must be fcst, post or plot" >&2; exit 1;; esac
 PLOT_DOMAINS=${HRRRCAST_PLOT_DOMAINS:-tx hcfcd_hrrr}
+PLOT_PRODUCTS=${PLOT_PRODUCTS-REFC APCP* PWAT CAPE CIN HGT TMP UGRD VGRD}   # "" = every product
 HRRRCAST_CONDA_ENV=${HRRRCAST_CONDA_ENV:-hrrrcast}
 
 if [ $# -eq 0 ]; then
-    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
 fi
 
@@ -82,6 +88,7 @@ export TF_GPU_ALLOCATOR=cuda_malloc_async
 export HRRRCAST_XLA=${HRRRCAST_XLA:-0}
 export HRRRCAST_PLOT_WORKERS=$PLOT_WORKERS
 export HRRRCAST_BCS_WORKERS=$BCS_WORKERS
+export HRRRCAST_PLOT_PRODUCTS=$PLOT_PRODUCTS   # read by plot.py; empty = every product
 export LPMM_PATCH LPMM_HALO
 
 mkdir -p "$DATAROOT/logs"
@@ -171,7 +178,7 @@ run_case() {
         [ "$PLOT_LPMM" == "YES" ] && (( N_ENSEMBLES >= 2 )) && members="$members lpmm"
         [ "$RUNHRRR" == "YES" ] && members="hrrr $members"
         step plot python "$SRC/plot.py" "$INIT" "$LEAD_HOUR" --members $members --domains $PLOT_DOMAINS \
-            --products REFC "APCP*" PWAT CAPE --forecast_dir "$DATAROOT" --output_dir "$DATAROOT"
+            --forecast_dir "$DATAROOT" --output_dir "$DATAROOT"
         # 7. viewer next to the plots (images load from disk)
         step viewer python "$SRC/make_viewer_index.py" --base_dir "$DATAROOT" --local
     fi

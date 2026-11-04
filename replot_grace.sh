@@ -31,6 +31,11 @@
 #   FROM_GRIB          YES (default) / NO   rebuild cleaned-up NetCDF from the GRIB2 output (step 0)
 #   KEEP_NC            NO (default) / YES   keep the rebuilt / derived NetCDF files afterwards
 #   ONLY_PLOT          plot just these runs, e.g. "avg" or "avg spr" (default: hrrr, all members, avg)
+#   PLOT_PRODUCTS      which maps to draw (space-separated; "" = every product). Default:
+#                "REFC APCP* PWAT CAPE CIN HGT TMP UGRD VGRD". A name matches a whole variable
+#                (TMP = all 20 levels, APCP = 1-h + run-total/6-h/12-h), or one level (TMP_850hPa),
+#                and may use wildcards ("*_500hPa" = every variable at 500 hPa). Others: summary,
+#                T2M, D2M, WIND_10M, GUST, MSLMA, HLCY_0_3km, VIS, TCDC ... (cf_attributes.py).
 #   REPLOT_NODES       nodes in the plot job array (default 4)
 #   REPLOT_CPUS        cores per job / array task (default 48 = a whole Grace node)
 #   REPLOT_WALLTIME    prep job walltime (default 02:00:00); PLOT_WALLTIME for each plot task (02:00:00)
@@ -48,15 +53,14 @@ REMOVE_AVG_PLOTS=${REMOVE_AVG_PLOTS:-NO}
 REPLOT_WALLTIME=${REPLOT_WALLTIME:-02:00:00}
 REPLOT_CPUS=${REPLOT_CPUS:-48}
 REPLOT_NODES=${REPLOT_NODES:-4}
+PLOT_PRODUCTS=${PLOT_PRODUCTS-REFC APCP* PWAT CAPE CIN HGT TMP UGRD VGRD}   # "" = every product
 PLOT_WALLTIME=${PLOT_WALLTIME:-02:00:00}
 ONLY_PLOT=${ONLY_PLOT:-}
 
 if [ $# -eq 0 ]; then
-    sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
 fi
-# # quote each product for the job script; no wildcard expansion here (APCP* is for plot.py)
-# set -f; PRODUCT_ARGS=""; for p in $PLOT_PRODUCTS; do PRODUCT_ARGS+="\"$p\" "; done; set +f
 SB_ACCOUNT=""
 [ -n "${ACCNR:-}" ] && SB_ACCOUNT="--account=${ACCNR}"
 mkdir -p "$DATAROOT/logs"
@@ -174,7 +178,8 @@ JOBEOF
 source ${PACKAGEROOT}/etc/env_grace.sh
 module load WebProxy 2>/dev/null || echo "WebProxy module not loaded; cartopy map downloads may fail"
 cd ${DATAROOT}
-echo "Replot ${INIT} plots: ${PLOT_MEMBERS}; shard \${SLURM_ARRAY_TASK_ID:-0}/${REPLOT_NODES}"
+export HRRRCAST_PLOT_PRODUCTS="${PLOT_PRODUCTS}"   # read by plot.py; empty = every product
+echo "Replot ${INIT} plots: ${PLOT_MEMBERS}; products: \${HRRRCAST_PLOT_PRODUCTS:-all}; shard \${SLURM_ARRAY_TASK_ID:-0}/${REPLOT_NODES}"
 python ${PACKAGEROOT}/src/plot.py ${INIT} ${LEAD} --members ${PLOT_MEMBERS} --shard \${SLURM_ARRAY_TASK_ID:-0}/${REPLOT_NODES} \\
     --domains ${PLOT_DOMAINS} --forecast_dir ${DATAROOT} --output_dir ${DATAROOT}
 JOBEOF

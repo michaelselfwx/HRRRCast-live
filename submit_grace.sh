@@ -19,6 +19,11 @@
 #                Plotted by default: hrrr, m00..m(N-1), avg (ensemble mean; PMM for REFC,
 #                local PMM for precip; needs 2+ members). The spread (spr) is still computed
 #                (NetCDF/GRIB2) but no longer plotted.
+#   PLOT_PRODUCTS which maps to draw (space-separated; "" = every product). Default:
+#                "REFC APCP* PWAT CAPE CIN HGT TMP UGRD VGRD". A name matches a whole variable
+#                (TMP = all 20 levels, APCP = 1-h + run-total/6-h/12-h), or one level (TMP_850hPa),
+#                and may use wildcards ("*_500hPa" = every variable at 500 hPa). Others: summary,
+#                T2M, D2M, WIND_10M, GUST, MSLMA, HLCY_0_3km, VIS, TCDC ... (cf_attributes.py).
 #   PLOT_NODES   nodes (job-array tasks) for the member plots (default 4); HRRR_PLOT_NODES and
 #                ENS_PLOT_NODES (default 1 each) for the hrrr / avg plots. Every task takes a whole
 #                48-core node and plots an interleaved share of the member-hours (plot.py --shard).
@@ -44,6 +49,7 @@ FCST_EXTRA=${FCST_EXTRA:---bbox 25.8,36.5,-106.7,-93.5} # texas domain
 GET_BCS_EXTRA=${GET_BCS_EXTRA:-}
 PLOT_LPMM=${PLOT_LPMM:-NO} # dont plot a duplicate lpmm, since it is input into the avg button anyways
 PLOT_NODES=${PLOT_NODES:-4}
+PLOT_PRODUCTS=${PLOT_PRODUCTS-REFC APCP* PWAT CAPE CIN HGT TMP UGRD VGRD}   # set PLOT_PRODUCTS="" for everything
 HRRR_PLOT_NODES=${HRRR_PLOT_NODES:-1}
 ENS_PLOT_NODES=${ENS_PLOT_NODES:-1}
 PLOT_CPUS=${PLOT_CPUS:-48}
