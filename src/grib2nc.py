@@ -149,6 +149,21 @@ def convert_one(grib_path, nc_path, init_dt, hour):
     if not sfc and not pl:
         raise ValueError(f"no recognised fields in {os.path.basename(grib_path)}")
     ds = to_dataset(init_dt, hour, lats, lons, sfc, pl)
+    # Diagnostics with no GRIB2 code (GUST_CONV, GUST_FACTOR, WIND_MAX, RAIN/FRZR masks and
+    # fractions, warm/cold layer depths, DU/DV/SHEAR_SFC_0C) were never written to GRIB2, so
+    # recompute them for members exactly as fcst.py does. Only the missing ones are added; the
+    # avg/spr files are statistics over members, so they are left as stored (rerun
+    # compute_pmm, e.g. replot_grace.sh REDO_PMM=YES, to get these in the mean too).
+    added = []
+    if re.match(r"^hrrrcast_m\d+_f", os.path.basename(nc_path)):
+        try:
+            from diagnostics import compute_diagnostics
+            diag = compute_diagnostics(ds.copy())
+            added = [v for v in diag.data_vars if v not in ds.data_vars]
+            for v in added:
+                ds[v] = diag[v]
+        except Exception as e:
+            logger.warning(f"{os.path.basename(nc_path)}: diagnostics not recomputed ({e})")
     try:
         ds = apply_cf_attributes(ds, init_datetime=init_dt)
     except Exception as e:
@@ -157,6 +172,7 @@ def convert_one(grib_path, nc_path, init_dt, hour):
     ds.to_netcdf(tmp, encoding=get_cf_encoding(ds, init_dt), engine=utils.netcdf_engine())
     os.replace(tmp, nc_path)
     return f"{os.path.basename(nc_path)}: {len(sfc)} sfc + {len(pl)} pl vars" + \
+        (f" + {len(added)} recomputed diagnostics" if added else "") + \
         (f" ({len(skipped)} unknown msgs skipped: {', '.join(skipped[:5])})" if skipped else "")
 
 
