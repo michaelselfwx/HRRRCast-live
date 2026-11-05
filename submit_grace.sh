@@ -28,6 +28,9 @@
 #                ENS_PLOT_NODES (default 1 each) for the hrrr / avg plots. Every task takes a whole
 #                48-core node and plots an interleaved share of the member-hours (plot.py --shard).
 #                Plot jobs run on CPU nodes, so they never hold up the GPU forecast.
+#   CROP_DOMAINS GRIB2 sub-domains cut out at the end (src/crop_grib.py), default "hcfcd_hrrr hcfcd_href":
+#                YYYYMMDD/HH/<domain>/hrrrcast.<mem>.tHHz.pgrb2.fHH for every member, hrrr, avg, spr and
+#                lpmm. Names from plot.py DOMAINS; CROP_DOMAINS="" skips the step.
 #   FCST_WALLTIME / PMM_WALLTIME / ...  override any walltime below
 #   HRRRCAST_CONDA_SH / HRRRCAST_CONDA_ENV  where conda lives / env name (etc/env_grace.sh)
 
@@ -53,6 +56,8 @@ PLOT_PRODUCTS=${PLOT_PRODUCTS-REFC APCP* PWAT CAPE CIN T2M D2M WIND_10M GUST_CON
 HRRR_PLOT_NODES=${HRRR_PLOT_NODES:-1}
 ENS_PLOT_NODES=${ENS_PLOT_NODES:-1}
 PLOT_CPUS=${PLOT_CPUS:-48}
+CROP_DOMAINS=${CROP_DOMAINS-hcfcd_hrrr hcfcd_href}
+CROP_WALLTIME=${CROP_WALLTIME:-"00:30:00"}
 
 SBATCH_ACCOUNT_OPT=""
 if [ -n "${ACCNR:-}" ]; then SBATCH_ACCOUNT_OPT="--account=${ACCNR}"; fi
@@ -173,10 +178,19 @@ if [ $N_ENSEMBLES -ge 2 ]; then
     fi
 fi
 
+# cropped GRIB2 copies, once every GRIB2 writer is done: members (fcst), hrrr (get_hrrr_fcst),
+# lpmm (derived_precip, which itself waits for fcst + hrrr) and avg/spr (compute_pmm)
+if [ -n "$CROP_DOMAINS" ]; then
+    CROP_DEP="afterany:$jobidD"
+    [ -n "${jobid7:-}" ] && CROP_DEP+=":$jobid7"
+    atparse < $JOBDIR/job-crop-grib.sh > logs/job-crop-grib.sh
+    jobidX=$(sb --dependency=$CROP_DEP logs/job-crop-grib.sh) || exit 1; echo "Submitted crop_grib ($CROP_DOMAINS): $jobidX"
+fi
+
 if [ "$RUNCLEANUP" == "YES" ]; then
     atparse < $JOBDIR/job-cleanup.sh > logs/job-cleanup.sh
     # wait for EVERY job that reads the NetCDF (member/HRRR/ensemble plots run side by side)
     CLEAN_DEP="afterany:$last_jobid"
-    for j in ${jobidD:-} ${jobid6:-} ${jobidHP:-} ${jobid7:-} ${jobid8:-}; do CLEAN_DEP+=":$j"; done
+    for j in ${jobidD:-} ${jobid6:-} ${jobidHP:-} ${jobid7:-} ${jobid8:-} ${jobidX:-}; do CLEAN_DEP+=":$j"; done
     jobidc=$(sb --dependency=$CLEAN_DEP logs/job-cleanup.sh) || exit 1; echo "Submitted cleanup: $jobidc"
 fi
