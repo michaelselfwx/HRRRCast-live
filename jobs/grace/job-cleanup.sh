@@ -45,8 +45,8 @@ echo "Scanning directory: ${CLEANUP_DIR}"
 echo ""
 
 # Count files before cleanup
-total_files=$(find "${CLEANUP_DIR}" -type f | wc -l)
-preserve_files=$(find "${CLEANUP_DIR}" -type f -name "${PRESERVE_PATTERN}" | wc -l)
+total_files=$(find "${CLEANUP_DIR}" -maxdepth 1 -type f | wc -l)
+preserve_files=$(find "${CLEANUP_DIR}" -maxdepth 1 -type f -name "${PRESERVE_PATTERN}" | wc -l)
 echo "Total files found: ${total_files}"
 echo "Files to preserve (${PRESERVE_PATTERN}): ${preserve_files}"
 echo "Files to delete: $((total_files - preserve_files))"
@@ -55,7 +55,8 @@ echo ""
 echo "Starting cleanup..."
 echo ""
 
-# Find and delete all files except ${PRESERVE_PATTERN} files
+# Delete the files directly in the case folder except ${PRESERVE_PATTERN}. -maxdepth 1 leaves
+# the plot folders (m00_lead01h/, avg_lead01h/, hcfcd_hrrr/...) and their images alone.
 deleted_count=0
 error_count=0
 
@@ -69,7 +70,7 @@ while IFS= read -r -d '' file; do
         echo "ERROR: Failed to delete ${file}"
         error_count=$((error_count + 1))
     fi
-done < <(find "${CLEANUP_DIR}" -type f ! -name "${PRESERVE_PATTERN}" -print0)
+done < <(find "${CLEANUP_DIR}" -maxdepth 1 -type f ! -name "${PRESERVE_PATTERN}" -print0)
 
 echo ""
 echo "=================================================="
