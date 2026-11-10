@@ -2,7 +2,8 @@
 #SBATCH --job-name=make_bcs
 #SBATCH --output=logs/make_bcs_%j.out
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=@[CPU_TASKS]
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=48   # make_bcs.py runs one worker per core (7 tasks per lead hour)
 #SBATCH --mem=360G
 #SBATCH --time=@[MAKE_BCS_WALLTIME]
 #SBATCH --exclusive

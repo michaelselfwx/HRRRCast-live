@@ -159,22 +159,44 @@ class GridInterpolator:
         return regridded.values
 
 
+# Work units: each lead hour is split into one task per pressure-level variable (all its GFS levels)
+# plus one task for all surface fields, so short forecasts still fill a whole node.
+# Order must match pl_mappings in _process_gfs_file (it is the channel order in the output).
+PL_PARTS = ["gh", "q", "t", "u", "v", "w"]
+TASK_PARTS = PL_PARTS + ["sfc"]
+
+# One preprocessor (HRRR grid + xESMF regridder) per worker process, reused across its tasks
+_WORKER_CACHE = {}
+
+
+def _worker_preprocessor(hrrr_grid_file):
+    key = hrrr_grid_file or ""
+    if key not in _WORKER_CACHE:
+        config = WeatherPreprocessConfig(hrrr_grid_file)
+        _WORKER_CACHE[key] = (config, GRIBPreprocessor(config))
+    return _WORKER_CACHE[key]
+
+
 def process_single_lead_hour(args):
-    """Process a single lead hour for both pressure and surface variables.
+    """Process one lead hour: all fields (args has 5 items), or one part of them (6th item:
+    a pressure-level GRIB shortName from PL_PARTS, or "sfc" for the surface fields).
 
     If no GFS file exists at this valid time (e.g. the 3-hourly NCEI 0.5 deg archive),
     the nearest earlier/later files are processed and blended linearly in time.
     """
-    lead_time, init_datetime, base_dir, norm_file, hrrr_grid_file = args
+    lead_time, init_datetime, base_dir, norm_file, hrrr_grid_file = args[:5]
+    part = args[5] if len(args) > 5 else None
 
-    # Create a new preprocessor instance for this process
-    config = WeatherPreprocessConfig(hrrr_grid_file)
-    preprocessor = GRIBPreprocessor(config)
+    if part is None:
+        config = WeatherPreprocessConfig(hrrr_grid_file)
+        preprocessor = GRIBPreprocessor(config)
+    else:
+        config, preprocessor = _worker_preprocessor(hrrr_grid_file)
 
     # Get filename for this lead time
     gfs_file = preprocessor.get_valid_time_filename(init_datetime, lead_time, base_dir)
     if os.path.exists(gfs_file):
-        return _process_gfs_file(gfs_file, lead_time, init_datetime, base_dir, norm_file, config, preprocessor)
+        return _process_gfs_file(gfs_file, lead_time, init_datetime, base_dir, norm_file, config, preprocessor, part)
 
     bracket = find_bracketing_leads(preprocessor, init_datetime, lead_time, base_dir)
     if bracket is None:
@@ -191,21 +213,25 @@ def process_single_lead_hour(args):
         f"{w:.2f}*{os.path.basename(file_hi)}"
     )
     # Pass the target lead so the APCP future-synoptic lookup matches the hourly path
-    r_lo = _process_gfs_file(file_lo, lead_time, init_datetime, base_dir, norm_file, config, preprocessor)
-    r_hi = _process_gfs_file(file_hi, lead_time, init_datetime, base_dir, norm_file, config, preprocessor)
-    blended = [(1.0 - w) * x + w * y for x, y in zip(r_lo[1:], r_hi[1:])]
+    r_lo = _process_gfs_file(file_lo, lead_time, init_datetime, base_dir, norm_file, config, preprocessor, part)
+    r_hi = _process_gfs_file(file_hi, lead_time, init_datetime, base_dir, norm_file, config, preprocessor, part)
+    blended = [None if x is None else ((1.0 - w) * x + w * y).astype(x.dtype, copy=False)
+               for x, y in zip(r_lo[1:], r_hi[1:])]
     return (lead_time, *blended)
 
 
-def _process_gfs_file(gfs_file, lead_time, init_datetime, base_dir, norm_file, config, preprocessor):
-    """Extract, regrid and normalize all GFS fields from one file.
+def _process_gfs_file(gfs_file, lead_time, init_datetime, base_dir, norm_file, config, preprocessor, part=None):
+    """Extract, regrid and normalize all GFS fields from one file (part=None), or only one
+    pressure-level variable (part = its GRIB shortName) or only the surface fields (part="sfc").
+    With a part, only the normalized float32 arrays are returned (raw values: None), which keeps
+    the data sent back from worker processes small.
 
     lead_time is the *target* lead hour (used for logging and the APCP future-synoptic
     lookup); gfs_file may be a neighbouring file when time-interpolating.
     Missing variables/levels are filled with the normalization mean (0) so the channel
     count always matches what the model expects.
     """
-    logger.info(f"Processing lead time {lead_time}h from file: {os.path.basename(gfs_file)}")
+    logger.info(f"Processing lead time {lead_time}h{'' if part is None else f' [{part}]'} from file: {os.path.basename(gfs_file)}")
 
     if not preprocessor.interpolator.hrrr_coords_loaded:
         preprocessor.interpolator.load_hrrr_grid_coordinates(config.hrrr_grid_file)
@@ -239,10 +265,13 @@ def _process_gfs_file(gfs_file, lead_time, init_datetime, base_dir, norm_file, c
         {'shortName': 'w',  'cfg': 'GFS-VVEL'},
     ]
 
+    assert [m['shortName'] for m in pl_mappings] == PL_PARTS, "PL_PARTS must follow pl_mappings"
     normalized_pl, raw_pl = [], []
     for mapping in pl_mappings:
         short = mapping['shortName']
         cfg_name = mapping['cfg']
+        if part is not None and part != short:
+            continue
 
         try:
             selected = grbs.select(shortName=short, level=config.levels)
@@ -308,6 +337,8 @@ def _process_gfs_file(gfs_file, lead_time, init_datetime, base_dir, norm_file, c
     grbs.close()
     pres_norm = np.array(normalized_pl)
     pres_raw = np.array(raw_pl)
+    if part is not None and part != "sfc":
+        return lead_time, pres_norm.astype(np.float32), None, None, None
 
     # Surface variable mappings including height-specific variants
     sfc_mappings = [
@@ -435,6 +466,8 @@ def _process_gfs_file(gfs_file, lead_time, init_datetime, base_dir, norm_file, c
 
     grbs.close()
 
+    if part == "sfc":
+        return lead_time, None, None, np.array(normalized_sfc).astype(np.float32), None
     return lead_time, np.array(pres_norm), np.array(pres_raw), np.array(normalized_sfc), np.array(raw_sfc)
 
 
@@ -551,6 +584,41 @@ class GRIBPreprocessor:
             logger.error(f"Error processing surface variables: {e}")
             raise
     
+    def process_all(self, init_datetime: datetime, base_dir: str, norm_file: str, max_lead_hours: int,
+                    n_workers: int = 1, skip_zero: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+        """Pressure-level and surface fields for every lead hour in ONE pass over the GFS files.
+
+        (process_pressure_levels / process_surface_variables each ran the full per-hour
+        processing and kept half of it, so every file was regridded twice.) The work is split
+        into (lead hour, part) tasks: 6 pressure variables + the surface set = 7 per hour.
+        Returns (pres_norm [lead, 120, H, W], sfc_norm [lead, 18, H, W]) as float32.
+        """
+        leads = list(range(1 if skip_zero else 0, max_lead_hours + 1))
+        tasks = [(lead, part) for lead in leads for part in TASK_PARTS]
+        logger.info(f"Processing {len(leads)} lead hours x {len(TASK_PARTS)} parts = {len(tasks)} tasks "
+                    f"with {n_workers} workers")
+        results = {}
+        args = lambda lead, part: (lead, init_datetime, base_dir, norm_file, self.config.hrrr_grid_file, part)
+        if n_workers == 1:
+            for lead, part in tasks:
+                _, pn, _, sn, _ = process_single_lead_hour(args(lead, part))
+                results[(lead, part)] = sn if part == "sfc" else pn
+        else:
+            with ProcessPoolExecutor(max_workers=n_workers) as executor:
+                futs = {executor.submit(process_single_lead_hour, args(lead, part)): (lead, part)
+                        for lead, part in tasks}
+                done = 0
+                for fut in as_completed(futs):
+                    lead, part = futs[fut]
+                    _, pn, _, sn, _ = fut.result()
+                    results[(lead, part)] = sn if part == "sfc" else pn
+                    done += 1
+                    if done % max(1, len(tasks) // 20) == 0 or done == len(tasks):
+                        logger.info(f"Completed {done}/{len(tasks)} tasks (last: lead {lead}h {part})")
+        pres = np.stack([np.concatenate([results[(lead, p)] for p in PL_PARTS], axis=0) for lead in leads])
+        sfc = np.stack([results[(lead, "sfc")] for lead in leads])
+        return pres, sfc
+
     def save_preprocessed_data(self, output_file: str, pres_norm: np.ndarray,
                               sfc_norm: np.ndarray, lats: np.ndarray, 
                               lons: np.ndarray, metadata: Dict) -> None:
@@ -609,14 +677,19 @@ def preprocess_grib_data(norm_file: str, datetime_str: str,
         logger.info("Data will be interpolated to HRRR grid (no downsampling)")
         logger.info("Reading from separate GRIB files for each lead time based on valid time")
         
-        # Set n_workers to number of lead hours (1 to max_lead_time inclusive)
-        n_workers = max_lead_time if max_lead_time > 0 else 1
-        # cap with $HRRRCAST_BCS_WORKERS (each worker holds full-grid GFS->HRRR fields; a desktop
-        # runs out of memory with one per lead hour, and the OS kills workers abruptly)
+        # Workers: one per available core, at most one per (lead hour, part) task. Cap with
+        # $HRRRCAST_BCS_WORKERS (each worker holds full-grid GFS->HRRR fields; a desktop runs
+        # out of memory with too many, and the OS kills workers abruptly).
+        try:
+            cores = len(os.sched_getaffinity(0))
+        except AttributeError:
+            cores = os.cpu_count() or 1
+        n_tasks = max(max_lead_time, 1) * len(TASK_PARTS)
+        n_workers = max(1, min(cores, n_tasks))
         cap = int(os.environ.get("HRRRCAST_BCS_WORKERS", "0") or 0)
         if cap > 0:
             n_workers = min(n_workers, cap)
-        logger.info(f"Using {n_workers} worker processes for parallel processing (one per lead hour, skipping 0th hour)")
+        logger.info(f"Using {n_workers} worker processes ({cores} cores available, {n_tasks} tasks)")
         
         # Setup paths
         init_datetime, init_year, init_month, init_day, init_hh = utils.validate_datetime(datetime_str)
@@ -692,11 +765,12 @@ def preprocess_grib_data(norm_file: str, datetime_str: str,
         preprocessor = GRIBPreprocessor(config)
         
         # Process GRIB data for all lead times (skipping 0th hour)
-        logger.info("Processing pressure level data for all lead times with HRRR grid interpolation...")
-        pres_norm = preprocessor.process_pressure_levels(init_datetime, base_dir, norm_file, max_lead_time, n_workers, skip_zero=True)
-        
-        logger.info("Processing surface data for all lead times with HRRR grid interpolation...")
-        sfc_norm, lats, lons = preprocessor.process_surface_variables(init_datetime, base_dir, norm_file, max_lead_time, n_workers, skip_zero=True)
+        logger.info("Processing pressure-level and surface data for all lead times with HRRR grid interpolation...")
+        if not preprocessor.interpolator.hrrr_coords_loaded:
+            preprocessor.interpolator.load_hrrr_grid_coordinates(config.hrrr_grid_file)
+        lats, lons = config.hrrr_lats, config.hrrr_lons
+        pres_norm, sfc_norm = preprocessor.process_all(init_datetime, base_dir, norm_file, max_lead_time,
+                                                       n_workers, skip_zero=True)
         
         # Validate grid dimensions
         expected_shape = (config.grid_height, config.grid_width)
