@@ -51,7 +51,7 @@ case "$GRACE_GPU" in a100|a40) ;; *) echo "GRACE_GPU must be a100 or a40" >&2; e
 FCST_EXTRA=${FCST_EXTRA:---bbox 25.8,36.5,-106.7,-93.5} # texas domain
 GET_BCS_EXTRA=${GET_BCS_EXTRA:-}
 PLOT_LPMM=${PLOT_LPMM:-NO} # dont plot a duplicate lpmm, since it is input into the avg button anyways
-PLOT_NODES=${PLOT_NODES:-4}
+PLOT_NODES=${PLOT_NODES:-1}
 PLOT_PRODUCTS=${PLOT_PRODUCTS-REFC APCP* PWAT CAPE CIN T2M D2M WIND_10M GUST_CONV PRES RELV_max_0_2km MXUPHL_max_0_2km HLCY_0_1km HLCY_0_3km}   # set PLOT_PRODUCTS="" for everything
 HRRR_PLOT_NODES=${HRRR_PLOT_NODES:-1}
 ENS_PLOT_NODES=${ENS_PLOT_NODES:-1}

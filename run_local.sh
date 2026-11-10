@@ -51,7 +51,7 @@
 
 set -u
 PACKAGEROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-DATAROOT=${DATAROOT:-$HOME/hrrrcast-data}
+DATAROOT=${DATAROOT:-/mnt/c/users/michaelself/hrrrcast-data}
 LEAD_HOUR=${LEAD_HOUR:-18}
 N_ENSEMBLES=${N_ENSEMBLES:-18}
 BATCH_SIZE=${BATCH_SIZE:-1}
