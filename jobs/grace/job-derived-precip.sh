@@ -3,8 +3,8 @@
 #SBATCH --output=logs/derived_precip_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=48   # derived_precip.py: reads and per-hour PMM/LPMM in parallel
+#SBATCH --mem=128G
 #SBATCH --time=@[DERIVED_WALLTIME]
 
 INIT_TIME="@[INIT_TIME]"

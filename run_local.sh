@@ -38,6 +38,9 @@
 #                (TMP = all 20 levels, APCP = 1-h + run-total/6-h/12-h), or one level (TMP_850hPa),
 #                and may use wildcards ("*_500hPa" = every variable at 500 hPa). Others: summary,
 #                T2M, D2M, WIND_10M, GUST, MSLMA, HLCY_0_3km, VIS, TCDC ... (cf_attributes.py).
+#   PMM_WORKERS     compute_pmm.py processes, one forecast hour each (default 4; ~10 GB RAM each
+#                   with 18 members)
+#   PRECIP_WORKERS  derived_precip.py processes (default: same as PLOT_WORKERS)
 #   PLOT_WORKERS    plot processes (default: half the CPU threads; each needs ~1-2 GB RAM)
 #   LPMM_PATCH / LPMM_HALO   LPMM tile / halo in grid points (default 16 / 24)
 #   START_AT        skip earlier steps of a case already partly run: fcst (inputs already
@@ -60,17 +63,18 @@ PLOT_LPMM=${PLOT_LPMM:-NO}
 NCPU=$(nproc 2>/dev/null || echo 4)
 PLOT_WORKERS=${PLOT_WORKERS:-$(( NCPU > 1 ? NCPU / 2 : 1 ))}
 BCS_WORKERS=${BCS_WORKERS:-8}
+PMM_WORKERS=${PMM_WORKERS:-4}
 LPMM_PATCH=${LPMM_PATCH:-16}
 LPMM_HALO=${LPMM_HALO:-24}
 CLEANUP=${CLEANUP:-NO}
 START_AT=${START_AT:-}
 case "$START_AT" in ""|fcst|post|plot) ;; *) echo "START_AT must be fcst, post or plot" >&2; exit 1;; esac
 PLOT_DOMAINS=${HRRRCAST_PLOT_DOMAINS:-tx hcfcd_hrrr}
-PLOT_PRODUCTS=${PLOT_PRODUCTS-REFC APCP* PWAT CAPE CIN HGT TMP UGRD VGRD}   # "" = every product
+PLOT_PRODUCTS=${PLOT_PRODUCTS:-REFC APCP* PWAT CAPE CIN T2M D2M WIND_10M GUST_CONV PRES RELV_max_0_2km MXUPHL_max_0_2km HLCY_0_1km HLCY_0_3km}   # "" = every product
 HRRRCAST_CONDA_ENV=${HRRRCAST_CONDA_ENV:-hrrrcast}
 
 if [ $# -eq 0 ]; then
-    sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
 fi
 
@@ -101,6 +105,8 @@ export TF_GPU_ALLOCATOR=cuda_malloc_async
 export HRRRCAST_XLA=${HRRRCAST_XLA:-0}
 export HRRRCAST_PLOT_WORKERS=$PLOT_WORKERS
 export HRRRCAST_BCS_WORKERS=$BCS_WORKERS
+export HRRRCAST_PMM_WORKERS=$PMM_WORKERS
+export HRRRCAST_PRECIP_WORKERS=${PRECIP_WORKERS:-$PLOT_WORKERS}
 export HRRRCAST_PLOT_PRODUCTS=$PLOT_PRODUCTS   # read by plot.py; empty = every product
 export LPMM_PATCH LPMM_HALO
 

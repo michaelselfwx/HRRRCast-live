@@ -134,8 +134,48 @@ def write_lpmm_grib(case_dir: str, init_dt, hh: str, h: int) -> None:
         logger.warning(f"{os.path.basename(gb)}: GRIB2 output failed ({e}); the NetCDF file is fine")
 
 
+def _read_hourly(path: str) -> np.ndarray:
+    """1-h APCP of one hourly file, >= 0, NaN -> 0."""
+    return np.maximum(np.nan_to_num(read_apcp(path)[1]), 0)
+
+
+def _hour_products(case_dir, h, init_dt, hh, run_fields, ens_members, hourly_ens, patch, halo, smooth,
+                   do_lpmm, grib2):
+    """Write every product of forecast hour h (runs in a worker process).
+
+    run_fields: {run: {name: 2-D}} accumulations per member / reference run;
+    ens_members: HRRRCast members in this hour's ensemble; hourly_ens: their 1-h APCP stack."""
+    template = None
+    for r, f in run_fields.items():
+        template = read_apcp(os.path.join(case_dir, f"hrrrcast_{r}_f{h:02d}.nc"))[0]
+        write(os.path.join(case_dir, f"hrrrcast_{r}_precip_f{h:02d}.nc"), template, f,
+              {"source": "derived_precip.py"})
+    if len(ens_members) >= 2:
+        template = read_apcp(os.path.join(case_dir, f"hrrrcast_{ens_members[0]}_f{h:02d}.nc"))[0]
+        names = list(run_fields[ens_members[0]])
+        stacks = {n: np.stack([run_fields[m][n] for m in ens_members]) for n in names}
+        write(os.path.join(case_dir, f"hrrrcast_avg_precip_f{h:02d}.nc"), template,
+              {n: pmm(st) for n, st in stacks.items()},
+              {"processing_method": "probability_matched_mean"})
+        if do_lpmm:
+            stacks = {"APCP": hourly_ens, **stacks}
+            write(os.path.join(case_dir, f"hrrrcast_lpmm_f{h:02d}.nc"), template,
+                  {n: lpmm(st, patch, halo, smooth) for n, st in stacks.items()},
+                  {"processing_method": "local_probability_matched_mean",
+                   "lpmm_patch_points": patch, "lpmm_halo_points": halo,
+                   "lpmm_smooth_sigma": smooth})
+            if grib2:
+                write_lpmm_grib(case_dir, init_dt, hh, h)
+    return h
+
+
 def run(inittime: str, lead_hours: int, forecast_dir: str, patch: int, halo: int, smooth: float,
-        do_lpmm: bool, grib2: bool = True):
+        do_lpmm: bool, grib2: bool = True, workers: int = 0):
+    """Three steps: (1) read every run's 1-h APCP for every hour (parallel), (2) running totals
+    (cheap, in order), (3) each hour's files, PMM and LPMM (parallel; hours are independent).
+    workers: 0 = $HRRRCAST_PRECIP_WORKERS, else the available cores."""
+    from concurrent.futures import ProcessPoolExecutor
+
     init_dt, y, mo, d, hh = utils.validate_datetime(inittime)
     case_dir = os.path.join(forecast_dir, f"{y}{mo}{d}", hh)
     members = [f"m{m:02d}" for m in find_members(case_dir)]
@@ -144,58 +184,64 @@ def run(inittime: str, lead_hours: int, forecast_dir: str, patch: int, halo: int
         raise FileNotFoundError(f"No hrrrcast_mNN_f01.nc (or hrrrcast_hrrr_f01.nc) files in {case_dir}")
     logger.info(f"{case_dir}: members {members}, reference runs {refs}, hours 1-{lead_hours}")
 
-    totals = {m: [np.zeros(0, np.float32)] for m in members + refs}   # cumulative totals; index = hour
-    keep = max(WINDOWS.values())
-    for h in range(1, lead_hours + 1):
-        # a member (or the HRRR) whose files stop early is dropped from this hour on
-        for m in [m for m in members if not os.path.exists(os.path.join(case_dir, f"hrrrcast_{m}_f{h:02d}.nc"))]:
-            logger.warning(f"Missing hrrrcast_{m}_f{h:02d}.nc; dropping {m} from f{h:02d} on")
-            members.remove(m)
-        for r in list(refs):
-            if not os.path.exists(os.path.join(case_dir, f"hrrrcast_{r}_f{h:02d}.nc")):
-                logger.warning(f"Missing hrrrcast_{r}_f{h:02d}.nc; {r} products stop at f{h - 1:02d}")
-                refs.remove(r)
-        if not members and not refs:
-            return
+    # a member (or the HRRR) whose files stop early is dropped from that hour on
+    last = {}
+    for r in members + refs:
+        h = 0
+        while h < lead_hours and os.path.exists(os.path.join(case_dir, f"hrrrcast_{r}_f{h + 1:02d}.nc")):
+            h += 1
+        last[r] = h
+        if h < lead_hours:
+            logger.warning(f"Missing hrrrcast_{r}_f{h + 1:02d}.nc; {r} products stop at f{h:02d}")
+    n_hours = max(last.values())
 
-        hourly, member_fields, template = {}, {}, None
-        for m in members + refs:
-            template, vals = read_apcp(os.path.join(case_dir, f"hrrrcast_{m}_f{h:02d}.nc"))
-            vals = np.maximum(np.nan_to_num(vals), 0)
-            hourly[m] = vals
-            prev = totals[m][-1] if totals[m][-1].size else np.zeros_like(vals)
-            totals[m].append(prev + vals)
+    try:
+        cores = len(os.sched_getaffinity(0))
+    except AttributeError:
+        cores = os.cpu_count() or 1
+    workers = workers or int(os.environ.get("HRRRCAST_PRECIP_WORKERS") or 0) or cores
 
-            # per-member accumulations
-            f = {"APCP_TOT": totals[m][h]}
+    # (1) read all 1-h APCP fields (processes, not threads: netCDF4/HDF5 is not thread-safe)
+    jobs = [(r, h) for r in members + refs for h in range(1, last[r] + 1)]
+    paths = [os.path.join(case_dir, f"hrrrcast_{r}_f{h:02d}.nc") for r, h in jobs]
+    n_read = max(1, min(workers, 16, len(jobs)))
+    if n_read == 1:
+        vals = [_read_hourly(pth) for pth in paths]
+    else:
+        with ProcessPoolExecutor(max_workers=n_read) as ex:
+            vals = list(ex.map(_read_hourly, paths, chunksize=4))
+    hourly = dict(zip(jobs, vals))
+    logger.info(f"Read {len(jobs)} hourly APCP fields")
+
+    # (2) running totals and window sums per run and hour
+    fields = {}                                       # (run, h) -> {name: 2-D}
+    for r in members + refs:
+        tot = [None]
+        for h in range(1, last[r] + 1):
+            tot.append(hourly[(r, h)] if h == 1 else tot[h - 1] + hourly[(r, h)])
+            f = {"APCP_TOT": tot[h]}
             for name, w in WINDOWS.items():
                 if h >= w:
-                    start = totals[m][h - w] if (h - w) > 0 else 0.0
-                    f[name] = totals[m][h] - start
-            member_fields[m] = f
-            write(os.path.join(case_dir, f"hrrrcast_{m}_precip_f{h:02d}.nc"), template, f,
-                  {"source": "derived_precip.py"})
-            # drop history no longer needed for the longest window
-            if h - keep - 1 >= 1:
-                totals[m][h - keep - 1] = np.zeros(0, np.float32)
+                    f[name] = tot[h] - tot[h - w] if h - w > 0 else tot[h]
+            fields[(r, h)] = f
 
-        # ensemble products (HRRRCast members only)
-        if len(members) >= 2:
-            template = read_apcp(os.path.join(case_dir, f"hrrrcast_{members[0]}_f{h:02d}.nc"))[0]
-            names = list(member_fields[members[0]])
-            stacks = {n: np.stack([member_fields[m][n] for m in members]) for n in names}
-            write(os.path.join(case_dir, f"hrrrcast_avg_precip_f{h:02d}.nc"), template,
-                  {n: pmm(s) for n, s in stacks.items()},
-                  {"processing_method": "probability_matched_mean"})
-            if do_lpmm:
-                stacks = {"APCP": np.stack([hourly[m] for m in members]), **stacks}
-                write(os.path.join(case_dir, f"hrrrcast_lpmm_f{h:02d}.nc"), template,
-                      {n: lpmm(s, patch, halo, smooth) for n, s in stacks.items()},
-                      {"processing_method": "local_probability_matched_mean",
-                       "lpmm_patch_points": patch, "lpmm_halo_points": halo,
-                       "lpmm_smooth_sigma": smooth})
-                if grib2:
-                    write_lpmm_grib(case_dir, init_dt, hh, h)
+    # (3) per-hour products in parallel
+    tasks = []
+    for h in range(1, n_hours + 1):
+        runs_h = [r for r in members + refs if last[r] >= h]
+        ens_h = [m for m in members if last[m] >= h]
+        hourly_ens = np.stack([hourly[(m, h)] for m in ens_h]) if len(ens_h) >= 2 else None
+        tasks.append((case_dir, h, init_dt, hh, {r: fields[(r, h)] for r in runs_h}, ens_h, hourly_ens,
+                      patch, halo, smooth, do_lpmm, grib2))
+    n_workers = max(1, min(workers, len(tasks)))
+    logger.info(f"Writing products for {len(tasks)} hours with {n_workers} worker processes")
+    if n_workers == 1:
+        for t in tasks:
+            _hour_products(*t)
+    else:
+        with ProcessPoolExecutor(max_workers=n_workers) as ex:
+            for h in ex.map(_hour_products, *zip(*tasks)):
+                logger.info(f"Finished f{h:02d}")
 
 
 def main():
@@ -210,12 +256,14 @@ def main():
     ap.add_argument("--no_lpmm", action="store_true", help="skip the LPMM products")
     ap.add_argument("--no_grib2", action="store_true",
                     help="do not write hrrrcast.lpmm.tHHz.pgrb2.fHH (GRIB2 of the LPMM 1-h APCP)")
+    ap.add_argument("--workers", type=int, default=0,
+                    help="parallel processes (default: $HRRRCAST_PRECIP_WORKERS, else all available cores)")
     ap.add_argument("--log_level", default="INFO")
     a = ap.parse_args()
     setup_logging(a.log_level)
     try:
         run(a.inittime, a.lead_hours, a.forecast_dir, a.lpmm_patch, a.lpmm_halo, a.lpmm_smooth,
-            not a.no_lpmm, not a.no_grib2)
+            not a.no_lpmm, not a.no_grib2, a.workers)
     except Exception as e:
         logger.exception(f"derived_precip failed: {e}")
         sys.exit(1)

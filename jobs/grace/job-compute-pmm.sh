@@ -3,8 +3,8 @@
 #SBATCH --output=logs/compute_pmm_%j.out
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=128G
+#SBATCH --cpus-per-task=48   # compute_pmm.py: one process per forecast hour, up to the cores
+#SBATCH --mem=360G           # each process holds one hour of the whole ensemble (~10 GB for 18 members)
 #SBATCH --time=@[PMM_WALLTIME]
 
 INIT_TIME="@[INIT_TIME]"

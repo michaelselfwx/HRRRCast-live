@@ -308,6 +308,123 @@ def load_hour_ensemble_data(files: List[str]) -> xr.Dataset:
     logger.info(f"Loaded per-hour ensemble dataset with dims: {dict(ensemble_ds.dims)}")
     return ensemble_ds
 
+def _process_hour(h: int, files: List[str], init_datetime, output_date_dir: str, method: int) -> None:
+    """Mean/PMM and spread of one forecast hour: NetCDF + GRIB2 for avg and spr."""
+    logger.info(f"Processing forecast hour f{h:02d} with {len(files)} member files")
+
+    # Load per-hour ensemble
+    ensemble_ds = load_hour_ensemble_data(files)
+
+    processed_datasets: Dict[str, xr.DataArray] = {}
+    spread_datasets: Dict[str, xr.DataArray] = {}
+
+    for var_name in ensemble_ds.data_vars:
+        # Skip CF metadata variables
+        if var_name == 'grid_mapping':
+            continue
+
+        var_data = ensemble_ds[var_name]
+        if 'member' not in var_data.dims:
+            logger.warning(f"Variable {var_name} missing 'member' dim at f{h:02d}, copying as-is")
+            da = var_data
+            spread_da = var_data
+        else:
+            if var_name in ['REFC', 'APCP']:
+                logger.info(f"PMM for {var_name} at f{h:02d}")
+                da = process_variable_pmm(var_data, method=method)
+                da.attrs['processing_method'] = 'probability_matched_mean'
+            else:
+                logger.info(f"Mean for {var_name} at f{h:02d}")
+                da = process_variable_mean(var_data)
+                da.attrs['processing_method'] = 'ensemble_mean'
+
+            logger.info(f"Spread for {var_name} at f{h:02d}")
+            spread_da = process_variable_spread(var_data)
+            spread_da.attrs['processing_method'] = 'ensemble_spread_stddev'
+
+        # Ensure time and lead_time coords/dims exist for downstream writer
+        # If dims already exist, just set their coordinate values; else expand dims
+        if 'time' in da.dims and 'lead_time' in da.dims:
+            da = da.assign_coords(time=[np.datetime64(init_datetime)],
+                                  lead_time=[int(h)])
+        else:
+            da = da.expand_dims({
+                'time': [np.datetime64(init_datetime)],
+                'lead_time': [int(h)]
+            })
+
+        if 'time' in spread_da.dims and 'lead_time' in spread_da.dims:
+            spread_da = spread_da.assign_coords(time=[np.datetime64(init_datetime)],
+                                                lead_time=[int(h)])
+        else:
+            spread_da = spread_da.expand_dims({
+                'time': [np.datetime64(init_datetime)],
+                'lead_time': [int(h)]
+            })
+
+        processed_datasets[var_name] = da
+        spread_datasets[var_name] = spread_da
+
+    processed_ds = xr.Dataset(processed_datasets)
+    spread_ds = xr.Dataset(spread_datasets)
+
+    # Apply CF attributes
+    processed_ds = apply_cf_attributes(processed_ds, init_datetime=init_datetime)
+    spread_ds = apply_cf_attributes(spread_ds, init_datetime=init_datetime)
+
+    # Add processing-specific attributes
+    processed_ds.attrs.update({
+        'postprocessing_method': 'PMM for REFC/APCP, mean for others',
+        'pmm_method': method,
+        'processed_timestamp': str(datetime.now()),
+        'source_files': [os.path.basename(f) for f in files]
+    })
+
+    spread_ds.attrs.update({
+        'postprocessing_method': 'ensemble spread (standard deviation)',
+        'processed_timestamp': str(datetime.now()),
+        'source_files': [os.path.basename(f) for f in files]
+    })
+
+    cycle = init_datetime.hour
+
+    # Save per-hour NetCDF
+    out_nc = os.path.join(output_date_dir, f"hrrrcast_avg_f{h:02d}.nc")
+    # Get CF-compliant encoding
+    encoding = get_cf_encoding(processed_ds, init_datetime)
+    processed_ds.to_netcdf(out_nc, encoding=encoding, engine=utils.netcdf_engine())
+    logger.info(f"Wrote NetCDF : {out_nc}")
+
+    out_nc_spread = os.path.join(output_date_dir, f"hrrrcast_spr_f{h:02d}.nc")
+    encoding = get_cf_encoding(spread_ds, init_datetime)
+    spread_ds.to_netcdf(out_nc_spread, encoding=encoding, engine=utils.netcdf_engine())
+    logger.info(f"Wrote NetCDF : {out_nc_spread}")
+
+    # Save per-hour GRIB2, like fcst.py writes the members: the grid definition comes from
+    # this (cropped) grid's own size and first point, and lead_time is the integer hour.
+    # (A bare Netcdf2Grib() describes the full 1799x1059 CONUS grid, which does not match
+    # the cropped data, and lead_time here is a timedelta, not hours.)
+    lat2d = np.asarray(processed_ds["latitude"].values)
+    lon2d = np.asarray(processed_ds["longitude"].values)
+    ny, nx = lat2d.shape[-2:]
+    grid_converter = Netcdf2Grib(section3=Netcdf2Grib.construct_section3_hrrr(
+        nx=nx, ny=ny, lat1=float(lat2d[0, 0]), lon1=float(lon2d[0, 0]) % 360.0))
+    for tag, ds_out in (("avg", processed_ds), ("spr", spread_ds)):
+        out_grib2 = os.path.join(output_date_dir, f"hrrrcast.{tag}.t{cycle:02d}z.pgrb2.f{h:02d}")
+        ds_g = ds_out.assign_coords(lead_time=("lead_time", [h] * ds_out.sizes.get("lead_time", 1))) \
+            if "lead_time" in ds_out.coords else ds_out
+        try:
+            grid_converter.save_grib2(init_datetime, ds_g, out_grib2)
+            logger.info(f"Wrote GRIB2 : {out_grib2}")
+        except Exception as e:
+            logger.warning(f"GRIB2 {out_grib2} failed: {e}")
+
+    # Close datasets to free memory
+    ensemble_ds.close()
+    processed_ds.close()
+    spread_ds.close()
+
+
 def compute_ensemble_pmm(datetime_str: str,
                         lead_hour: int,
                         forecast_dir: str = "./", 
@@ -334,6 +451,7 @@ def compute_ensemble_pmm(datetime_str: str,
         min_age_seconds = int(os.environ.get("PMM_MIN_AGE_SECONDS", "90"))
         timeout_seconds = int(os.environ.get("PMM_TIMEOUT_SECONDS", "600"))
 
+        todo = []   # (hour, member files) to process after the loop (no_wait mode)
         for h in range(0, int(lead_hour) + 1):
             # Wait until files are present and stable before processing this hour
             # Hour 0: wait indefinitely; subsequent hours: max timeout_seconds
@@ -354,119 +472,41 @@ def compute_ensemble_pmm(datetime_str: str,
                     logger.error(f"Files not found for hour f{h:02d}: {e}")
                     logger.error("Forecast job appears to be dead or has failed. Exiting PMM computation.")
                     sys.exit(1)
-            logger.info(f"Processing forecast hour f{h:02d} with {len(files)} member files")
+            if wait:
+                _process_hour(h, files, init_datetime, output_date_dir, method)
+            else:
+                todo.append((h, files))
 
-            # Load per-hour ensemble
-            ensemble_ds = load_hour_ensemble_data(files)
-
-            processed_datasets: Dict[str, xr.DataArray] = {}
-            spread_datasets: Dict[str, xr.DataArray] = {}
-
-            for var_name in ensemble_ds.data_vars:
-                # Skip CF metadata variables
-                if var_name == 'grid_mapping':
-                    continue
-                    
-                var_data = ensemble_ds[var_name]
-                if 'member' not in var_data.dims:
-                    logger.warning(f"Variable {var_name} missing 'member' dim at f{lead_hour:02d}, copying as-is")
-                    da = var_data
-                    spread_da = var_data
-                else:
-                    if var_name in ['REFC', 'APCP']:
-                        logger.info(f"PMM for {var_name} at f{h:02d}")
-                        da = process_variable_pmm(var_data, method=method)
-                        da.attrs['processing_method'] = 'probability_matched_mean'
-                    else:
-                        logger.info(f"Mean for {var_name} at f{h:02d}")
-                        da = process_variable_mean(var_data)
-                        da.attrs['processing_method'] = 'ensemble_mean'
-
-                    logger.info(f"Spread for {var_name} at f{h:02d}")
-                    spread_da = process_variable_spread(var_data)
-                    spread_da.attrs['processing_method'] = 'ensemble_spread_stddev'
-
-                # Ensure time and lead_time coords/dims exist for downstream writer
-                # If dims already exist, just set their coordinate values; else expand dims
-                if 'time' in da.dims and 'lead_time' in da.dims:
-                    da = da.assign_coords(time=[np.datetime64(init_datetime)],
-                                          lead_time=[int(h)])
-                else:
-                    da = da.expand_dims({
-                        'time': [np.datetime64(init_datetime)],
-                        'lead_time': [int(h)]
-                    })
-
-                if 'time' in spread_da.dims and 'lead_time' in spread_da.dims:
-                    spread_da = spread_da.assign_coords(time=[np.datetime64(init_datetime)],
-                                                        lead_time=[int(h)])
-                else:
-                    spread_da = spread_da.expand_dims({
-                        'time': [np.datetime64(init_datetime)],
-                        'lead_time': [int(h)]
-                    })
-
-                processed_datasets[var_name] = da
-                spread_datasets[var_name] = spread_da
-
-            processed_ds = xr.Dataset(processed_datasets)
-            spread_ds = xr.Dataset(spread_datasets)
-
-            # Apply CF attributes
-            processed_ds = apply_cf_attributes(processed_ds, init_datetime=init_datetime)
-            spread_ds = apply_cf_attributes(spread_ds, init_datetime=init_datetime)
-
-            # Add processing-specific attributes
-            processed_ds.attrs.update({
-                'postprocessing_method': 'PMM for REFC/APCP, mean for others',
-                'pmm_method': method,
-                'processed_timestamp': str(datetime.now()),
-                'source_files': [os.path.basename(f) for f in files]
-            })
-
-            spread_ds.attrs.update({
-                'postprocessing_method': 'ensemble spread (standard deviation)',
-                'processed_timestamp': str(datetime.now()),
-                'source_files': [os.path.basename(f) for f in files]
-            })
-
-            cycle = init_datetime.hour
-
-            # Save per-hour NetCDF
-            out_nc = os.path.join(output_date_dir, f"hrrrcast_avg_f{h:02d}.nc")
-            # Get CF-compliant encoding
-            encoding = get_cf_encoding(processed_ds, init_datetime)
-            processed_ds.to_netcdf(out_nc, encoding=encoding, engine=utils.netcdf_engine())
-            logger.info(f"Wrote NetCDF : {out_nc}")
-
-            out_nc_spread = os.path.join(output_date_dir, f"hrrrcast_spr_f{h:02d}.nc")
-            encoding = get_cf_encoding(spread_ds, init_datetime)
-            spread_ds.to_netcdf(out_nc_spread, encoding=encoding, engine=utils.netcdf_engine())
-            logger.info(f"Wrote NetCDF : {out_nc_spread}")
-
-            # Save per-hour GRIB2, like fcst.py writes the members: the grid definition comes from
-            # this (cropped) grid's own size and first point, and lead_time is the integer hour.
-            # (A bare Netcdf2Grib() describes the full 1799x1059 CONUS grid, which does not match
-            # the cropped data, and lead_time here is a timedelta, not hours.)
-            lat2d = np.asarray(processed_ds["latitude"].values)
-            lon2d = np.asarray(processed_ds["longitude"].values)
-            ny, nx = lat2d.shape[-2:]
-            grid_converter = Netcdf2Grib(section3=Netcdf2Grib.construct_section3_hrrr(
-                nx=nx, ny=ny, lat1=float(lat2d[0, 0]), lon1=float(lon2d[0, 0]) % 360.0))
-            for tag, ds_out in (("avg", processed_ds), ("spr", spread_ds)):
-                out_grib2 = os.path.join(output_date_dir, f"hrrrcast.{tag}.t{cycle:02d}z.pgrb2.f{h:02d}")
-                ds_g = ds_out.assign_coords(lead_time=("lead_time", [h] * ds_out.sizes.get("lead_time", 1))) \
-                    if "lead_time" in ds_out.coords else ds_out
-                try:
-                    grid_converter.save_grib2(init_datetime, ds_g, out_grib2)
-                    logger.info(f"Wrote GRIB2 : {out_grib2}")
-                except Exception as e:
-                    logger.warning(f"GRIB2 {out_grib2} failed: {e}")
-
-            # Close datasets to free memory
-            ensemble_ds.close()
-            processed_ds.close()
-            spread_ds.close()
+        if todo:
+            # hours are independent once the forecasts are done: one process per hour.
+            # Workers: $HRRRCAST_PMM_WORKERS, else the available cores, at most one per hour
+            # (each holds one hour of the whole ensemble in memory).
+            try:
+                cores = len(os.sched_getaffinity(0))
+            except AttributeError:
+                cores = os.cpu_count() or 1
+            n_workers = int(os.environ.get("HRRRCAST_PMM_WORKERS") or 0) or cores
+            n_workers = max(1, min(n_workers, len(todo)))
+            logger.info(f"Processing {len(todo)} hours with {n_workers} worker processes")
+            if n_workers == 1:
+                for h, files in todo:
+                    _process_hour(h, files, init_datetime, output_date_dir, method)
+            else:
+                from concurrent.futures import ProcessPoolExecutor, as_completed
+                failed = []
+                with ProcessPoolExecutor(max_workers=n_workers) as ex:
+                    futs = {ex.submit(_process_hour, h, files, init_datetime, output_date_dir, method): h
+                            for h, files in todo}
+                    for fut in as_completed(futs):
+                        h = futs[fut]
+                        try:
+                            fut.result()
+                            logger.info(f"Finished f{h:02d}")
+                        except Exception as e:
+                            failed.append(h)
+                            logger.error(f"f{h:02d} failed: {e}")
+                if failed:
+                    raise RuntimeError(f"hours failed: {sorted(failed)}")
 
         logger.info("Ensemble per-hour post-processing completed successfully")
 
