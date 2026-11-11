@@ -13,7 +13,6 @@ so plot.py draws them like any member (`--members mrms`) and the viewer lists "M
     variable      MRMS product                        time used                 HRRRCast counterpart
     REFC          MergedReflectivityQCComposite       scan nearest HH:00        REFC
     APCP          MultiSensor_QPE_01H_Pass2           1 h ending at HH:00       APCP (1-h)
-    ROTTRK_0_2km  RotationTrack60min (0-2 km AzShear) max over the past 60 min  (cf. MXUPHL_max_0_2km)
     MESH          MESH_Max_60min                      max over the past 60 min  (none: hail size)
 
 Grid: the native ~1 km (0.01 deg) MRMS grid inside the domain's lat/lon box (default), or with
@@ -66,9 +65,6 @@ PRODUCTS = {
     "APCP": dict(product="MultiSensor_QPE_01H_Pass2_00.00", isu="MultiSensor_QPE_01H_Pass2",
                  exact=True, floor=None, agg="mean", long_name="1-h precipitation (MRMS multi-sensor QPE)",
                  units="kg m-2"),
-    "ROTTRK_0_2km": dict(product="RotationTrack60min_00.50", isu="RotationTrack60min",
-                         floor=0.0, agg="max", long_name="0-2 km rotation track, 60-min max (MRMS)",
-                         units="s-1"),
     "MESH": dict(product="MESH_Max_60min_00.50", isu="MESH_Max_60min",
                  floor=0.0, agg="max", long_name="Max estimated hail size, 60-min max (MRMS)", units="mm"),
 }
@@ -159,35 +155,14 @@ def read_mrms(url: str, spec: dict):
     lat, lon = lat2[:, 0].astype(np.float64), ((lon2[0, :] + 180.0) % 360.0) - 180.0
     if lat[0] > lat[-1]:                       # MRMS scans north -> south
         lat, vals = lat[::-1], vals[::-1]
-    lat, lon, vals = coarsen_to_001(lat, lon, vals)
     # MRMS flags: -999 no coverage, -99 / -3 / -1 "no data" / below threshold
     if spec["floor"] is None:                  # QPE: any negative value is a flag
         vals = np.where(vals < 0, np.nan, vals)
     elif spec["floor"] < 0:                    # REFC: no coverage -> NaN, no echo -> floor
         vals = np.where(vals < -900, np.nan, np.maximum(vals, spec["floor"]))
-    else:                                      # rotation / hail: flags -> NaN, values >= 0
+    else:                                      # hail: flags -> NaN, values >= 0
         vals = np.where(vals < 0, np.nan, vals)
     return lat, lon, vals.astype(np.float32)
-
-
-def coarsen_to_001(lat, lon, vals):
-    """The rotation tracks come on a 0.005 deg grid (twice the 0.01 deg of REFC / QPE / MESH).
-    Take the max of each 2x2 block so every product lands on the same 0.01 deg grid (the 0.005 deg
-    cells pair up exactly into the 0.01 deg cells) and can share one file."""
-    dlat = abs(float(lat[1] - lat[0]))
-    f = int(round(0.01 / dlat)) if dlat < 0.0075 else 1
-    if f <= 1:
-        return lat, lon, vals
-    ny, nx = (vals.shape[0] // f) * f, (vals.shape[1] // f) * f
-    v = vals[:ny, :nx]
-    out = v[0::f, 0::f]
-    for di in range(f):
-        for dj in range(f):
-            if di or dj:
-                out = np.fmax(out, v[di::f, dj::f])      # NaN only where the whole block is NaN
-    lat_c = lat[:ny].reshape(-1, f).mean(axis=1)
-    lon_c = lon[:nx].reshape(-1, f).mean(axis=1)
-    return lat_c, lon_c, out
 
 
 def box_indices(lat, lon, ref_lat, ref_lon):

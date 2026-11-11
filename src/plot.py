@@ -62,9 +62,8 @@ DERIVED_META = {
     "APCP_12H": {"long_name": "12-h precipitation",             "units": "mm"},
 }
 # MRMS-only fields (src/get_mrms.py, member "mrms")
-MRMS_VARS = ["REFC", "APCP", "ROTTRK_0_2km", "MESH"]
+MRMS_VARS = ["REFC", "APCP", "MESH"]
 MRMS_META = {
-    "ROTTRK_0_2km": {"long_name": "0-2 km rotation track (60-min max)", "units": "s-1", "cmap": "YlOrRd"},
     "MESH":         {"long_name": "Max estimated hail size (60-min max)", "units": "mm", "cmap": "turbo"},
 }
 
@@ -177,7 +176,7 @@ FIXED_LEVELS = {
     "HGT_500hPa": _r(5100, 6000, 30), "HGT_300hPa": _r(8400, 9900, 50), "HGT_250hPa": _r(9600, 11100, 50),
     "UGRD": _r(-60, 60, 5), "VGRD": _r(-60, 60, 5), "VVEL": _r(-5, 5, 0.5),
     "SPFH": _r(0, 0.024, 0.001),
-    "ROTTRK_0_2km": _r(0.002, 0.02, 0.001), "MESH": np.array([2.5, 5, 10, 15, 20, 25, 32, 38, 44, 51, 64, 76, 102]),
+    "MESH": np.array([2.5, 5, 10, 15, 20, 25, 32, 38, 44, 51, 64, 76, 102]),
 }
 # ensemble spread (standard deviation) of the same fields
 SPREAD_LEVELS = {
@@ -484,7 +483,7 @@ class ForecastPlotter:
                 cmap = self.config.cmap_default
             levels = fixed_levels(var_name, level, data, spread)
         if var_name in MRMS_META and not spread:
-            # rotation / hail: below the first level is "nothing", leave it blank
+            # hail: below the first level is "nothing", leave it blank
             data = np.where(np.asarray(data) >= levels[0], data, np.nan)
 
         fig, ax, cax = self._new_map_figure(lats, lons)
@@ -851,7 +850,7 @@ def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, i
                 # LPMM file only holds the precipitation products
                 plotter.plot_derived_precip(dsd, h, output_subdir, timestamp_str, label=" (local PMM)")
             elif member == "mrms":
-                # MRMS file holds REFC / APCP / rotation track / MESH; QPE sums in the _precip file
+                # MRMS file holds REFC / APCP / MESH; QPE sums in the _precip file
                 plotter.plot_surface_variables(dsd, h, output_subdir, timestamp_str)
                 if dsp is not None:
                     dspd = domain_view(dsp, dom)[0]

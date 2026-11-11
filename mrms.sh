@@ -1,6 +1,6 @@
 #!/bin/bash
 # MRMS observations for HRRRCast cases that have already run -- separate from the forecast.
-# Fetches REFC / 1-h QPE (+ run-total, 6-h, 12-h sums) / rotation track / MESH at the top of every
+# Fetches REFC / 1-h QPE (+ run-total, 6-h, 12-h sums) / MESH at the top of every
 # forecast hour (src/get_mrms.py) and plots them as member "mrms" (src/plot.py).
 #
 # Usage:
