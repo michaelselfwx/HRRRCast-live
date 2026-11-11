@@ -86,6 +86,42 @@ def ensure_county_shapes() -> bool:
         return False
 
 
+MAP_SHAPES = [("physical", "coastline"), ("cultural", "admin_0_boundary_lines_land"),
+              ("cultural", "admin_1_states_provinces_lakes")]   # cfeature COASTLINE / BORDERS / STATES
+
+
+def ensure_map_shapes() -> None:
+    """Download the Natural Earth coastline / border / state shapefiles once, before the worker
+    processes start. Otherwise every worker downloads the same files at the same time into the
+    same cache and they end up truncated ("unpack requires a buffer of N bytes"). A cached file
+    that does not read cleanly is deleted and fetched again."""
+    if not CARTOPY_AVAILABLE:
+        return
+    import glob as _glob
+    import warnings
+    import cartopy
+    from cartopy.io import shapereader
+    for res in ("10m", "50m"):
+        for category, name in MAP_SHAPES:
+            for attempt in range(2):
+                try:
+                    path = shapereader.natural_earth(resolution=res, category=category, name=name)
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error")          # a truncated file only warns when read
+                        for _ in shapereader.Reader(path).geometries():
+                            pass
+                    break
+                except Exception as e:
+                    if attempt:
+                        logging.getLogger(__name__).warning(f"Map shapes {res} {name} unavailable ({e})")
+                        break
+                    stem = os.path.join(cartopy.config["data_dir"], "shapefiles", "natural_earth",
+                                        category, f"ne_{res}_{name}")
+                    for f in _glob.glob(stem + ".*"):
+                        os.remove(f)
+                    logging.getLogger(__name__).info(f"Re-downloading damaged/missing {os.path.basename(stem)}")
+
+
 def product_wanted(product: str, patterns: Optional[List[str]]) -> bool:
     """True if a product (e.g. "REFC_surface", "HGT_500hPa", "summary") should be plotted.
 
@@ -496,7 +532,7 @@ class ForecastPlotter:
                     # Use lead_time dimension and select first time step (time=0)
                     # Per-hour file has a single lead_time slot; index 0
                     data = ds[var_name].isel(time=0, lead_time=0, level=level_idx).values
-                    logger.info(f"{var_name} stats - mean: {np.nanmean(data):.2f}, std: {np.nanstd(data):.2f}, min: {np.nanmin(data):.2f}, max: {np.nanmax(data):.2f}")
+                    logger.info(f"{var_name} stats - mean: {np.nanmean(data):.2f}, std: {np.nanstd(data):.2f}, min: {np.nanmin(data):.2f}, max: {np.nanmax(data):.2f}") if np.isfinite(data).any() else logger.info(f"{var_name}: all missing")
                     
                     # Create plot
                     fig = self.create_plot(data, lats, lons, var_name, level, title_suffix)
@@ -541,7 +577,7 @@ class ForecastPlotter:
                 # Per-hour file has a single lead_time slot; index 0
                 data = ds[var_name].isel(time=0, lead_time=0).values
                 # log mean, std, min, max of data
-                logger.info(f"{var_name} stats - mean: {np.nanmean(data):.2f}, std: {np.nanstd(data):.2f}, min: {np.nanmin(data):.2f}, max: {np.nanmax(data):.2f}")
+                logger.info(f"{var_name} stats - mean: {np.nanmean(data):.2f}, std: {np.nanstd(data):.2f}, min: {np.nanmin(data):.2f}, max: {np.nanmax(data):.2f}") if np.isfinite(data).any() else logger.info(f"{var_name}: all missing")
                 
                 # Create plot
                 fig = self.create_plot(data, lats, lons, var_name, None, title_suffix)
@@ -867,6 +903,7 @@ def plot_forecast_data(datetime_str: str,
         config.domains = domains or ["tx"]
         if counties is not None:
             config.counties = counties
+        ensure_map_shapes()
         if config.counties:
             # fetch the county shapefile once here, before the worker processes start,
             # so parallel workers don't all try to download it at the same time
