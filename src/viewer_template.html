@@ -125,7 +125,7 @@ main{overflow-y:auto;min-width:0;display:flex;flex-direction:column}
 #load{flex:none;align-self:center;font:11px var(--mono);color:var(--muted);min-width:90px;text-align:right}
 
 /* map panels */
-#grid{display:grid;gap:6px;padding:8px 10px 14px;justify-content:center;align-content:center;flex:1 0 auto}
+#grid{display:grid;gap:6px;padding:8px 10px 14px}
 .cell{background:var(--panel);border:1px solid var(--line);display:flex;flex-direction:column;min-width:0;overflow:hidden}
 .cell .lbl{padding:3px 8px;font-size:12px;display:flex;justify-content:space-between;gap:8px;
   background:var(--panel2);border-bottom:1px solid var(--line)}
@@ -133,13 +133,12 @@ main{overflow-y:auto;min-width:0;display:flex;flex-direction:column}
 .cell .lbl span{font:11px var(--mono);color:var(--muted)}
 .cell .img{position:relative;flex:1;display:flex;align-items:center;justify-content:center;cursor:zoom-in;
   min-height:120px;background:#fff;overflow:hidden}
-/* --img-w / --img-h are set by fitGrid() so all panels fill the window without scrolling */
-.cell img{width:var(--img-w,auto);height:var(--img-h,auto);max-width:100%;max-height:var(--img-h,calc(100vh - 130px));
-  display:block;object-fit:contain;
+.cell img{max-width:100%;max-height:calc(100vh - 130px);display:block;object-fit:contain;
   transform-origin:0 0;user-select:none;-webkit-user-drag:none}
 #grid.zoomed .cell .img{cursor:grab;touch-action:none}
 #grid.zoomed .cell .img.panning{cursor:grabbing}
 .cell.focus .img{cursor:zoom-out}
+.cell.focus img{max-height:calc(100vh - 110px)}
 .missing{color:#666;font:12px var(--mono);padding:30px 10px;text-align:center}
 #empty{padding:60px 20px;color:var(--muted);max-width:640px}
 #empty code{font-family:var(--mono);background:var(--panel2);padding:1px 5px}
@@ -159,7 +158,7 @@ main{overflow-y:auto;min-width:0;display:flex;flex-direction:column}
   #field{height:9em}
   #bar{flex-wrap:wrap}
   #hours{flex-basis:100%;order:3}
-  .cell img{max-height:none;width:auto;height:auto}
+  .cell img{max-height:none}
   #grid{grid-template-columns:minmax(0,1fr) !important}
 }
 </style>
@@ -445,40 +444,13 @@ function wireZoom(box, img){
 
 // ---------- grid ----------
 let cells = {};
-let aspect = 3021 / 1968;                          // map PNG width / height; updated from the first image
-// Size the panels so all selected maps fill the space under the hour bar: try every column count
-// and keep the one giving the largest maps that still fit the window's width AND height (no
-// page scroll, no empty band at the bottom). A fixed "Columns" choice keeps its column count.
-function fitGrid(){
-  const g = $("grid"), main = g.parentElement;
-  const n = g.querySelectorAll(".cell").length;
-  if (!n || window.innerWidth <= 820){             // phones: one column, natural scrolling
-    g.style.removeProperty("--img-w"); g.style.removeProperty("--img-h"); return;
-  }
-  const cs = getComputedStyle(g), gap = parseFloat(cs.columnGap) || 6;
-  const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
-  const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
-  const W = main.clientWidth - padX;
-  const H = main.clientHeight - $("bar").offsetHeight - padY;
-  const lbl = g.querySelector(".cell .lbl"), L = (lbl ? lbl.offsetHeight : 22) + 2;   // label + borders
-  const fixed = S.focus ? 1 : (S.cols === "auto" ? 0 : +S.cols);
-  let best = null;
-  for (let c = fixed || 1; c <= (fixed || n); c++){
-    const r = Math.ceil(n / c);
-    const wByW = (W - (c - 1) * gap) / c - 2;
-    const wByH = ((H - (r - 1) * gap) / r - L) * aspect;
-    const w = Math.floor(Math.max(80, Math.min(wByW, wByH)));
-    if (!best || w > best.w + 0.5) best = {c, w};
-  }
-  g.style.gridTemplateColumns = `repeat(${best.c}, ${best.w + 2}px)`;
-  g.style.setProperty("--img-w", best.w + "px");
-  g.style.setProperty("--img-h", Math.floor(best.w / aspect) + "px");
-}
-window.addEventListener("resize", () => { clearTimeout(fitGrid.t); fitGrid.t = setTimeout(fitGrid, 60); });
 function buildGrid(){
   const g = $("grid"); g.innerHTML = ""; cells = {};
   const mems = caseObj().members.filter(m => S.members.has(m));
   const shown = S.focus && mems.includes(S.focus) ? [S.focus] : mems;
+  let cols = S.cols === "auto" ? Math.min(shown.length, shown.length <= 4 ? shown.length : shown.length <= 6 ? 3 : 4) : +S.cols;
+  if (S.focus) cols = 1;
+  g.style.gridTemplateColumns = `repeat(${Math.max(1,cols)}, minmax(0,1fr))`;
   if (!shown.length){ g.innerHTML = '<div class="pick">No members selected &mdash; tick one or more under Members.</div>'; }
   for (const m of shown){
     const cell = document.createElement("div"); cell.className = "cell" + (S.focus ? " focus" : "");
@@ -490,15 +462,9 @@ function buildGrid(){
       if (panMoved){ panMoved = false; return; }
       S.focus = S.focus ? null : m; buildGrid(); draw(); writeHash();
     };
-    const im = cell.querySelector("img");
-    im.addEventListener("load", () => {            // real map shape -> refit if it differs
-      const a = im.naturalWidth / im.naturalHeight;
-      if (a && Math.abs(a - aspect) / aspect > 0.01){ aspect = a; fitGrid(); }
-    });
-    wireZoom(box, im);
+    wireZoom(box, cell.querySelector("img"));
     g.appendChild(cell); cells[m] = cell;
   }
-  fitGrid();
   applyZoom();
 }
 function draw(){
