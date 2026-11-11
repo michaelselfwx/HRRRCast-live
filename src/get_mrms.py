@@ -159,6 +159,7 @@ def read_mrms(url: str, spec: dict):
     lat, lon = lat2[:, 0].astype(np.float64), ((lon2[0, :] + 180.0) % 360.0) - 180.0
     if lat[0] > lat[-1]:                       # MRMS scans north -> south
         lat, vals = lat[::-1], vals[::-1]
+    lat, lon, vals = coarsen_to_001(lat, lon, vals)
     # MRMS flags: -999 no coverage, -99 / -3 / -1 "no data" / below threshold
     if spec["floor"] is None:                  # QPE: any negative value is a flag
         vals = np.where(vals < 0, np.nan, vals)
@@ -167,6 +168,26 @@ def read_mrms(url: str, spec: dict):
     else:                                      # rotation / hail: flags -> NaN, values >= 0
         vals = np.where(vals < 0, np.nan, vals)
     return lat, lon, vals.astype(np.float32)
+
+
+def coarsen_to_001(lat, lon, vals):
+    """The rotation tracks come on a 0.005 deg grid (twice the 0.01 deg of REFC / QPE / MESH).
+    Take the max of each 2x2 block so every product lands on the same 0.01 deg grid (the 0.005 deg
+    cells pair up exactly into the 0.01 deg cells) and can share one file."""
+    dlat = abs(float(lat[1] - lat[0]))
+    f = int(round(0.01 / dlat)) if dlat < 0.0075 else 1
+    if f <= 1:
+        return lat, lon, vals
+    ny, nx = (vals.shape[0] // f) * f, (vals.shape[1] // f) * f
+    v = vals[:ny, :nx]
+    out = v[0::f, 0::f]
+    for di in range(f):
+        for dj in range(f):
+            if di or dj:
+                out = np.fmax(out, v[di::f, dj::f])      # NaN only where the whole block is NaN
+    lat_c = lat[:ny].reshape(-1, f).mean(axis=1)
+    lon_c = lon[:nx].reshape(-1, f).mean(axis=1)
+    return lat_c, lon_c, out
 
 
 def box_indices(lat, lon, ref_lat, ref_lon):
