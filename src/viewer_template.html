@@ -258,9 +258,9 @@ const NAMES = {
   VGRD_0C:"V wind at 0 °C", WIND_0C:"Wind at 0 °C", DU_SFC_0C:"ΔU sfc–0 °C", DV_SFC_0C:"ΔV sfc–0 °C",
   SHEAR_SFC_0C:"Shear sfc–0 °C", WARM_LAYER_DEPTH:"Warm layer depth", COLD_LAYER_DEPTH:"Cold layer depth"
 };
-const memLabel = m => m === "hrrr" ? "HRRR (operational)" : m === "avg" ? "Ensemble mean (PMM for REFC, LPMM for precip)" : m === "lpmm" ? "Local PMM (APCP only)" : m === "spr" ? "Spread" : "Member " + parseInt(m.slice(1),10);
-const memShort = m => m === "hrrr" ? "HRRR" : m === "avg" ? "Ens. mean" : m === "lpmm" ? "LPMM" : m === "spr" ? "Spread" : "Mem " + pad2(parseInt(m.slice(1),10));
-const panelTitle = m => m === "hrrr" ? "HRRR (operational)" : m === "avg" ? "Ensemble mean" : memLabel(m);
+const memLabel = m => m === "mrms" ? "MRMS (observed)" : m === "hrrr" ? "HRRR (operational)" : m === "avg" ? "Ensemble mean (PMM for REFC, LPMM for precip)" : m === "lpmm" ? "Local PMM (APCP only)" : m === "spr" ? "Spread" : "Member " + parseInt(m.slice(1),10);
+const memShort = m => m === "mrms" ? "MRMS" : m === "hrrr" ? "HRRR" : m === "avg" ? "Ens. mean" : m === "lpmm" ? "LPMM" : m === "spr" ? "Spread" : "Mem " + pad2(parseInt(m.slice(1),10));
+const panelTitle = m => m === "mrms" ? "MRMS (observed)" : m === "hrrr" ? "HRRR (operational)" : m === "avg" ? "Ensemble mean" : memLabel(m);
 
 if (!M || !M.cases || !Object.keys(M.cases).length){
   $("bar").hidden = true;
@@ -271,7 +271,7 @@ if (!M || !M.cases || !Object.keys(M.cases).length){
 }
 
 // ---------- state ----------
-const DEFAULT_MEMBERS = ["hrrr", "m00", "avg"];
+const DEFAULT_MEMBERS = ["mrms", "hrrr", "m00", "avg"];
 const S = {case:null, domain:"tx", field:null, level:null, members:new Set(), cleared:false, idx:0, cols:"auto", focus:null, playing:false};
 let timer = null, leads = [], cache = {};
 

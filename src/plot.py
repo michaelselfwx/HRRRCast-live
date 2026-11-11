@@ -61,6 +61,12 @@ DERIVED_META = {
     "APCP_6H":  {"long_name": "6-h precipitation",              "units": "mm"},
     "APCP_12H": {"long_name": "12-h precipitation",             "units": "mm"},
 }
+# MRMS-only fields (src/get_mrms.py, member "mrms")
+MRMS_VARS = ["REFC", "APCP", "ROTTRK_0_2km", "MESH"]
+MRMS_META = {
+    "ROTTRK_0_2km": {"long_name": "0-2 km rotation track (60-min max)", "units": "s-1", "cmap": "YlOrRd"},
+    "MESH":         {"long_name": "Max estimated hail size (60-min max)", "units": "mm", "cmap": "turbo"},
+}
 
 
 def ensure_county_shapes() -> bool:
@@ -135,6 +141,7 @@ FIXED_LEVELS = {
     "HGT_500hPa": _r(5100, 6000, 30), "HGT_300hPa": _r(8400, 9900, 50), "HGT_250hPa": _r(9600, 11100, 50),
     "UGRD": _r(-60, 60, 5), "VGRD": _r(-60, 60, 5), "VVEL": _r(-5, 5, 0.5),
     "SPFH": _r(0, 0.024, 0.001),
+    "ROTTRK_0_2km": _r(0.002, 0.02, 0.001), "MESH": np.array([2.5, 5, 10, 15, 20, 25, 32, 38, 44, 51, 64, 76, 102]),
 }
 # ensemble spread (standard deviation) of the same fields
 SPREAD_LEVELS = {
@@ -317,7 +324,8 @@ class ForecastPlotter:
         """Plot whichever derived precipitation fields are in ds (see DERIVED_PRECIP_VARS)."""
         lats = ds['latitude'].values
         lons = ds['longitude'].values
-        title_suffix = f"{label}\n{self.config.run_label}Forecast: {timestamp_str} + {lead_hour}h"
+        title_suffix = (f"{label}\n{self.config.valid_label}" if getattr(self.config, "valid_label", None)
+                        else f"{label}\n{self.config.run_label}Forecast: {timestamp_str} + {lead_hour}h")
         for var_name in DERIVED_PRECIP_VARS:
             if var_name not in ds.variables or not product_wanted(f"{var_name}_surface", self.config.products):
                 continue
@@ -414,7 +422,7 @@ class ForecastPlotter:
                    var_name: str, level: Optional[int] = None,
                    title_suffix: str = "") -> plt.Figure:
         """Create a plot for a given variable."""
-        var_meta = VARIABLE_METADATA.get(var_name) or DERIVED_META.get(var_name, {})
+        var_meta = VARIABLE_METADATA.get(var_name) or DERIVED_META.get(var_name) or MRMS_META.get(var_name, {})
         units = var_meta.get('units', '')
         long_name = var_meta.get('long_name', var_name)
         # Spread uses the members' colour bars: REFC, APCP, CAPE, ... get exactly the same scale,
@@ -439,6 +447,9 @@ class ForecastPlotter:
             if cmap not in plt.colormaps():
                 cmap = self.config.cmap_default
             levels = fixed_levels(var_name, level, data, spread)
+        if var_name in MRMS_META and not spread:
+            # rotation / hail: below the first level is "nothing", leave it blank
+            data = np.where(np.asarray(data) >= levels[0], data, np.nan)
 
         fig, ax, cax = self._new_map_figure(lats, lons)
         if norm is not None:
@@ -467,7 +478,8 @@ class ForecastPlotter:
         lons = ds['longitude'].values
         
         # Create title suffix with forecast information
-        title_suffix = f"\n{self.config.run_label}Forecast: {timestamp_str} + {lead_hour}h"
+        title_suffix = (f"\n{self.config.valid_label}" if getattr(self.config, "valid_label", None)
+                        else f"\n{self.config.run_label}Forecast: {timestamp_str} + {lead_hour}h")
         
         # Plot each variable at each level
         levels_in_ds = ds['level'].values if 'level' in ds.dims or 'level' in ds.coords else self.config.levels
@@ -511,7 +523,8 @@ class ForecastPlotter:
         lons = ds['longitude'].values
         
         # Create title suffix with forecast information
-        title_suffix = f"\n{self.config.run_label}Forecast: {timestamp_str} + {lead_hour}h"
+        title_suffix = (f"\n{self.config.valid_label}" if getattr(self.config, "valid_label", None)
+                        else f"\n{self.config.run_label}Forecast: {timestamp_str} + {lead_hour}h")
         
         # Plot each surface variable
         for var_name in self.config.sfc_vars:
@@ -753,6 +766,12 @@ def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, i
         setattr(config, k, v)
     if member == "hrrr":
         config.run_label = "HRRR "
+    if member == "mrms":
+        # observations (get_mrms.py): only the MRMS fields, titled with their valid time
+        config.sfc_vars = list(MRMS_VARS)
+        valid = init_datetime + timedelta(hours=int(h))
+        config.valid_label = (f"MRMS observed: valid {valid:%Y-%m-%d %H:%M} UTC "
+                              f"(init {init_year}-{init_month}-{init_day} {init_hh}:00 UTC + {h}h)")
     config.spread = (member == "spr")
     plotter = ForecastPlotter(config)
     base_zoom, base_county_lw = config.zoom_extent, config.county_lw
@@ -795,6 +814,13 @@ def plot_lead_hour(h, ds_path, init_datetime, init_year, init_month, init_day, i
             if member == "lpmm":
                 # LPMM file only holds the precipitation products
                 plotter.plot_derived_precip(dsd, h, output_subdir, timestamp_str, label=" (local PMM)")
+            elif member == "mrms":
+                # MRMS file holds REFC / APCP / rotation track / MESH; QPE sums in the _precip file
+                plotter.plot_surface_variables(dsd, h, output_subdir, timestamp_str)
+                if dsp is not None:
+                    dspd = domain_view(dsp, dom)[0]
+                    if dspd is not None:
+                        plotter.plot_derived_precip(dspd, h, output_subdir, timestamp_str, label=" (MRMS QPE)")
             else:
                 plotter.plot_pressure_level_variables(dsd, h, output_subdir, timestamp_str)
                 plotter.plot_surface_variables(dsd, h, output_subdir, timestamp_str)
@@ -832,7 +858,7 @@ def plot_forecast_data(datetime_str: str,
             if member == "pmm":         # 'pmm' alias -> 'avg'
                 member = "avg"
             m = str(member)
-            mem_strs.append(m if m in {"avg", "spr", "lpmm", "hrrr"} else f"m{int(m):02d}")
+            mem_strs.append(m if m in {"avg", "spr", "lpmm", "hrrr", "mrms"} else f"m{int(m):02d}")
 
         # Initialize plotter config (for passing to subprocesses)
         config = ForecastPlotterConfig()
@@ -897,7 +923,7 @@ def parse_arguments():
     parser.add_argument('inittime',
                        help='Forecast initialization time in format YYYY-MM-DDTHH (e.g., "2024-05-06T23")')
     parser.add_argument("lead_hour", help="Lead hour for forecast (0, 1, 2, ...)")
-    parser.add_argument("--members", nargs='+', required=True, help="List/range of member IDs (e.g., 0-2 4 6-7 pmm spr lpmm hrrr)")
+    parser.add_argument("--members", nargs='+', required=True, help="List/range of member IDs (e.g., 0-2 4 6-7 pmm spr lpmm hrrr mrms)")
     parser.add_argument("--forecast_dir", default="./", help="Directory containing forecast files")
     parser.add_argument("--output_dir", default="./", help="Output directory for plots")
     parser.add_argument(

@@ -37,7 +37,7 @@ IMAGE_BASE_URL = "https://hdwx.tamu.edu/products/HRRRCast"
 CASE_RE = re.compile(r"^\d{8}$")
 HOUR_RE = re.compile(r"^\d{2}$")
 # member folder: m00 / memm00 (older plot.py) / mem0 / avg / memavg / spr ...  + _leadNNh
-MEMDIR_RE = re.compile(r"^(?:mem)?(m?\d+|avg|spr|pmm|lpmm|hrrr)_lead(\d+)h$")  # m00, older memm00 / mem0, avg, spr
+MEMDIR_RE = re.compile(r"^(?:mem)?(m?\d+|avg|spr|pmm|lpmm|hrrr|mrms)_lead(\d+)h$")  # m00, older memm00 / mem0, avg, spr
 PNG_RE = re.compile(r"^(.+)_lead(\d+)h\.png$")
 
 
@@ -56,14 +56,14 @@ def product_wanted(product: str, patterns) -> bool:
 def member_id(raw: str) -> str:
     if raw in ("avg", "pmm"):
         return "avg"
-    if raw in ("spr", "lpmm", "hrrr"):
+    if raw in ("spr", "lpmm", "hrrr", "mrms"):
         return raw
     return f"m{int(raw.lstrip('m')):02d}"
 
 
 def member_sort_key(m: str):
     # viewer order: operational HRRR (reference), members m00.., PMM/mean, LPMM, spread last
-    special = {"hrrr": (-1, 0), "avg": (1, 0), "lpmm": (1, 1), "spr": (1, 2)}
+    special = {"mrms": (-2, 0), "hrrr": (-1, 0), "avg": (1, 0), "lpmm": (1, 1), "spr": (1, 2)}
     if m in special:
         return special[m]
     if m.startswith("m"):
