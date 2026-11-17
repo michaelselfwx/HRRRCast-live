@@ -199,9 +199,10 @@ def _wrap(lon):
 
 REFERENCE_PATTERNS = (
     # HRRRCast NetCDF output ...
-    "hrrrcast_m00_f01.nc", "hrrrcast_m*_f01.nc", "hrrrcast_m*_f[0-9]*.nc",
+    # (members only: m[0-9][0-9], so hrrrcast_mrms_fHH.nc / hrrrcast.mrms.* never count as the domain)
+    "hrrrcast_m00_f01.nc", "hrrrcast_m[0-9][0-9]_f01.nc", "hrrrcast_m[0-9][0-9]_f[0-9]*.nc",
     # ... or its GRIB2 output, which the cleanup job keeps when it deletes the NetCDF files
-    "hrrrcast.m00.t*z.pgrb2.f01", "hrrrcast.m*.t*z.pgrb2.f01", "hrrrcast.m*.t*z.pgrb2.f[0-9]*",
+    "hrrrcast.m00.t*z.pgrb2.f01", "hrrrcast.m[0-9][0-9].t*z.pgrb2.f01", "hrrrcast.m[0-9][0-9].t*z.pgrb2.f[0-9]*",
     "hrrrcast.avg.t*z.pgrb2.f01",
 )
 

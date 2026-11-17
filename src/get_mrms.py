@@ -19,6 +19,16 @@ Grid: the native ~1 km (0.01 deg) MRMS grid inside the domain's lat/lon box (def
 --grid hrrrcast the members' 3 km grid (each point takes the maximum of the nearby MRMS pixels,
 or their mean for APCP). Missing/no-coverage values become NaN; "no echo" REFC becomes -10 dBZ.
 
+GRIB2 for verification (MET etc.): every hour also gets
+
+    YYYYMMDD/HH/hrrrcast.mrms.tHHz.pgrb2.fHH  REFC + APCP on the members' 3 km grid
+
+written with the same GRIB2 writer and grid definition as the members (Netcdf2Grib), so it lines
+up point for point with hrrrcast.mNN.tHHz.pgrb2.fHH and survives the cleanup job. A native-grid
+file is put on the 3 km grid first, the same way --grid hrrrcast does (max for REFC, mean for
+APCP); no-coverage points are written as missing. Existing GRIB2 files are rewritten when their
+grid does not match the members' grid or the hour was refetched; --no_grib2 skips this step.
+
 Speed: one S3 listing per product and day finds every file; downloads run in threads, and the
 slow part -- decoding the PNG-packed 3500 x 7000 CONUS GRIB2 -- runs in parallel processes
 (--workers, default: all cores), each returning only the cut-out domain.
@@ -223,6 +233,63 @@ def write_nc(path, init_dt, hour, lat2, lon2, fields: dict, attrs: dict, grid: s
     os.replace(tmp, path)
 
 
+def grib2_grid_ok(path, shape) -> bool:
+    """True if the GRIB2 file exists and its first message has the members' grid size."""
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return False
+    try:
+        import pygrib
+        g = pygrib.open(str(path))
+        try:
+            m = g.message(1)
+            return (int(m["Nj"]), int(m["Ni"])) == tuple(shape)
+        finally:
+            g.close()
+    except Exception:
+        return False
+
+
+def write_grib2_3km(grib_path, init_dt, hour, fields: dict, lat2, lon2, ref_lat, ref_lon) -> bool:
+    """hrrrcast.mrms.tHHz.pgrb2.fHH: REFC/APCP on the members' 3 km grid, written like the members.
+    fields come from hrrrcast_mrms_fHH.nc on either grid (lat2/lon2 = that file's grid)."""
+    try:
+        from nc2grib import Netcdf2Grib
+    except Exception as e:                     # grib2io / ecCodes writer missing in this environment
+        logger.warning(f"f{hour:02d}: GRIB2 skipped, nc2grib unavailable ({e})")
+        return False
+    keep = [v for v in ("REFC", "APCP") if v in fields]
+    if not keep:
+        return False
+    ny, nx = ref_lat.shape
+    rlon = ((np.asarray(ref_lon) + 180.0) % 360.0) - 180.0
+    data = {}
+    for v in keep:
+        vals = np.asarray(fields[v][0], np.float32)
+        if vals.shape != (ny, nx):             # native lat/lon box -> members' grid
+            lat1 = np.asarray(lat2)[:, 0]
+            lon1 = ((np.asarray(lon2)[0, :] + 180.0) % 360.0) - 180.0
+            vals = to_hrrrcast_grid(lat1, lon1, vals, ref_lat, rlon, PRODUCTS[v]["agg"]).astype(np.float32)
+        data[v] = xr.DataArray(vals[None, None], dims=("lead_time", "time", "y", "x"))
+    ds = xr.Dataset(data, coords={"lead_time": ("lead_time", [hour]),
+                                  "time": ("time", [init_dt + timedelta(hours=hour)]),
+                                  "latitude": (("y", "x"), np.asarray(ref_lat)),
+                                  "longitude": (("y", "x"), np.asarray(ref_lon))})
+    section3 = Netcdf2Grib.construct_section3_hrrr(nx=nx, ny=ny, lat1=float(ref_lat[0, 0]),
+                                                   lon1=float(ref_lon[0, 0]) % 360.0)
+    tmp = str(grib_path) + ".tmp"
+    for f in (tmp, tmp + ".idx"):
+        if os.path.exists(f):
+            os.remove(f)
+    Netcdf2Grib(section3=section3).save_grib2(init_dt, ds, tmp)
+    if not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
+        logger.warning(f"f{hour:02d}: GRIB2 writer produced no output")
+        return False
+    os.replace(tmp, grib_path)
+    if os.path.exists(tmp + ".idx"):
+        os.replace(tmp + ".idx", str(grib_path) + ".idx")
+    return True
+
+
 def read_existing(path):
     """{var: (values 2-D, attrs)}, lat, lon, attrs of an existing hrrrcast_mrms_fHH.nc (or None)."""
     if not os.path.exists(path):
@@ -262,7 +329,7 @@ def write_accumulations(case_dir: Path, init_dt, lead: int):
 def lead_from_case(case_dir: Path, hh: str) -> int:
     hours = [int(m.group(1)) for f in glob.glob(str(case_dir / "hrrrcast_m*_f*.nc"))
              if (m := re.search(r"hrrrcast_m\d+_f(\d+)\.nc$", f))]
-    hours += [int(m.group(1)) for f in glob.glob(str(case_dir / f"hrrrcast.m*.t{hh}z.pgrb2.f*"))
+    hours += [int(m.group(1)) for f in glob.glob(str(case_dir / f"hrrrcast.m[0-9][0-9].t{hh}z.pgrb2.f*"))
               if (m := re.search(r"pgrb2\.f(\d+)$", f))]
     return max(hours) if hours else 0
 
@@ -290,6 +357,8 @@ def main():
                     help="decode processes (default 0: all cores; each needs ~1 GB RAM)")
     ap.add_argument("--download_threads", type=int, default=16)
     ap.add_argument("--overwrite", action="store_true", help="refetch every product, not just missing ones")
+    ap.add_argument("--no_grib2", action="store_true",
+                    help="don't write hrrrcast.mrms.tHHz.pgrb2.fHH (REFC/APCP on the members' 3 km grid)")
     ap.add_argument("--log_level", default="INFO")
     a = ap.parse_args()
     logging.basicConfig(level=a.log_level.upper(), format="%(asctime)s - %(levelname)s - %(message)s")
@@ -311,6 +380,7 @@ def main():
     # 1. what is needed: per hour, the products not already in its file
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     status, have, need = {}, {}, []
+    rewritten = set()                            # hours whose NetCDF was (re)written in this run
     for h in range(a.start_hour, lead + 1):
         valid = init_dt + timedelta(hours=h)
         if valid > now - timedelta(minutes=a.max_offset_min):
@@ -406,10 +476,30 @@ def main():
                          title="MRMS observations on the HRRRCast domain (get_mrms.py)")
             write_nc(case_dir / f"hrrrcast_mrms_f{h:02d}.nc", init_dt, h, lat2, lon2, fields, attrs, a.grid)
             logger.info(f"f{h:02d}: hrrrcast_mrms_f{h:02d}.nc + {' '.join(added)} ({lat2.shape[0]}x{lat2.shape[1]})")
+            rewritten.add(h)
             status[h] = "ok" if len(fields) == len(a.products) else "partial"
 
     if "APCP" in a.products:
         write_accumulations(case_dir, init_dt, lead)
+
+    # 5. GRIB2 on the members' 3 km grid (REFC, APCP) for verification; kept by the cleanup job
+    if not a.no_grib2:
+        n_grib = 0
+        for h in range(a.start_hour, lead + 1):
+            nc = case_dir / f"hrrrcast_mrms_f{h:02d}.nc"
+            gb = case_dir / f"hrrrcast.mrms.t{hh}z.pgrb2.f{h:02d}"
+            if not nc.exists():
+                continue
+            if h not in rewritten and not a.overwrite and grib2_grid_ok(gb, ref_lat.shape):
+                continue                         # already there, on the right grid
+            old = read_existing(nc)
+            try:
+                if old and write_grib2_3km(gb, init_dt, h, old[0], old[1], old[2], ref_lat, ref_lon):
+                    n_grib += 1
+            except Exception as e:
+                logger.error(f"f{h:02d}: GRIB2 failed ({e})")
+        if n_grib:
+            logger.info(f"Wrote {n_grib} hrrrcast.mrms.t{hh}z.pgrb2.fHH files (REFC/APCP on the 3 km grid)")
 
     summary = {k: sum(v == k for v in status.values()) for k in ("ok", "complete", "partial", "future", "missing")}
     logger.info(f"MRMS {case_dir}: " + ", ".join(f"{k} {n}" for k, n in summary.items() if n)

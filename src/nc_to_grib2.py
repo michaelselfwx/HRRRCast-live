@@ -8,16 +8,23 @@ ensemble products and the HRRR: earlier avg/spr GRIB2 files described the full 1
 CONUS grid instead of the cropped one (and a wrong forecast hour), so they are rewritten when
 their grid does not match the NetCDF. Correct files are left alone (--overwrite redoes them).
 
+By default every hrrrcast_<mem>_fHH.nc in the case folder is converted (members, avg, spr,
+hrrr, lpmm, ...) for every hour found. Not converted: the *_precip_fHH.nc sums (no GRIB2 code for
+multi-hour totals) and mrms (its native file is on a lat/lon grid, not the Lambert grid the writer
+describes; it is only included if named with --members, i.e. after get_mrms.py --grid hrrrcast).
+
 Usage:
-    python src/nc_to_grib2.py 2025-07-03T18 48 --base_dir $DATAROOT              # avg spr hrrr lpmm
+    python src/nc_to_grib2.py 2025-07-03T18 --base_dir $DATAROOT                 # everything found
     python src/nc_to_grib2.py 2025-07-03T18 48 --base_dir $DATAROOT --members avg spr
 Needs the NetCDF files (hrrrcast_<mem>_fHH.nc); the cleanup job deletes those, so for a
 cleaned-up case rerun compute_pmm.py from the member NetCDF files (if still there) instead.
 """
 
 import argparse
+import glob
 import logging
 import os
+import re
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -53,9 +60,11 @@ def grib_ok(grib_path: str, nc_path: str) -> bool:
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inittime", help="YYYY-MM-DDTHH")
-    ap.add_argument("lead_hours", type=int, help="last forecast hour")
+    ap.add_argument("lead_hours", type=int, nargs="?", default=None,
+                    help="last forecast hour (default: the last hour found in the folder)")
     ap.add_argument("--base_dir", default="./", help="data root (YYYYMMDD/HH/ under it)")
-    ap.add_argument("--members", nargs="+", default=["avg", "spr", "hrrr", "lpmm"])
+    ap.add_argument("--members", nargs="+", default=None,
+                    help="e.g. m00 avg spr hrrr (default: every hrrrcast_<mem>_fHH.nc in the folder, except mrms)")
     ap.add_argument("--start_hour", type=int, default=0)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--overwrite", action="store_true", help="rewrite even correct GRIB2 files")
@@ -65,9 +74,19 @@ def main():
 
     init_dt, y, mo, d, hh = utils.validate_datetime(a.inittime)
     case_dir = os.path.join(a.base_dir, f"{y}{mo}{d}", hh)
+    found = {}                                   # member -> hours with a NetCDF file
+    for f in glob.glob(os.path.join(case_dir, "hrrrcast_*_f*.nc")):
+        m = re.match(r"hrrrcast_([a-z0-9]+)_f(\d+)\.nc$", os.path.basename(f))   # skips *_precip_fHH.nc
+        if m:
+            found.setdefault(m[1], set()).add(int(m[2]))
+    # mrms is skipped unless named with --members: its native file is on MRMS's lat/lon grid,
+    # not the Lambert grid the GRIB2 writer describes (only valid after get_mrms.py --grid hrrrcast)
+    members = a.members or sorted(m for m in found if m != "mrms")
+    last = a.lead_hours if a.lead_hours is not None else max((max(v) for v in found.values()), default=-1)
+    logger.info(f"{case_dir}: members {' '.join(members) or 'none'}, f{a.start_hour:02d}-f{max(last, 0):02d}")
     jobs = []
-    for mem in a.members:
-        for h in range(a.start_hour, a.lead_hours + 1):
+    for mem in members:
+        for h in range(a.start_hour, last + 1):
             nc = os.path.join(case_dir, f"hrrrcast_{mem}_f{h:02d}.nc")
             if not os.path.exists(nc):
                 continue
