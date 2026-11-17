@@ -77,7 +77,7 @@ for INIT in "$@"; do
         status=1; continue
     fi
 
-    FETCH="python $PACKAGEROOT/src/get_mrms.py $INIT $LEAD --base_dir $DATAROOT --workers 8 $MRMS_EXTRA"
+    FETCH="python $PACKAGEROOT/src/get_mrms.py $INIT $LEAD --base_dir $DATAROOT $MRMS_EXTRA"
     PLOTCMD="python $PACKAGEROOT/src/plot.py $INIT $LEAD --members mrms --domains $PLOT_DOMAINS --forecast_dir $DATAROOT --output_dir $DATAROOT"
 
     if [ "$MODE" == "local" ]; then
